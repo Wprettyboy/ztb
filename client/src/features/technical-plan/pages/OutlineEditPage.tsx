@@ -381,6 +381,11 @@ function OutlineEditPage({
               <span>{outlineData?.outline?.length || 0} 个一级目录</span>
             </div>
             <div className="outline-tree-tools">
+              {outlineData && (
+                <button type="button" className="outline-add-root-action" onClick={addRootItem} disabled={generating}>
+                  添加一级目录
+                </button>
+              )}
               <button type="button" onClick={expandAllItems} disabled={!outlineData?.outline?.length}>全部展开</button>
               <button type="button" onClick={collapseAllItems} disabled={!outlineData?.outline?.length}>全部折叠</button>
             </div>
@@ -403,11 +408,6 @@ function OutlineEditPage({
               <strong>目录项详情</strong>
               <span>{selectedItem ? selectedItem.id : '未选择'}</span>
             </div>
-            {outlineData && (
-              <button type="button" className="outline-add-root-action" onClick={addRootItem} disabled={generating}>
-                添加一级目录
-              </button>
-            )}
           </div>
           {selectedItem ? (
             <div className="outline-detail-body">

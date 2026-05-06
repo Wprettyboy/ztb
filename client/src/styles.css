@@ -1291,22 +1291,6 @@ button {
   gap: 4px;
 }
 
-.outline-add-root-action {
-  flex: 0 0 auto;
-  padding: 8px 12px;
-  color: var(--yb-primary);
-  font-size: 13px;
-  font-weight: 800;
-  background: rgba(33, 116, 253, 0.08);
-  border: 1px solid rgba(33, 116, 253, 0.16);
-  border-radius: 999px;
-}
-
-.outline-add-root-action:disabled {
-  cursor: not-allowed;
-  opacity: 0.52;
-}
-
 .outline-progress-panel {
   border-right: 1px solid var(--yb-border-soft);
 }
@@ -1471,6 +1455,8 @@ button {
 .outline-tree-tools {
   display: flex;
   flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
 }
 
@@ -1487,6 +1473,13 @@ button {
 .outline-tree-tools button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
+}
+
+.outline-tree-tools .outline-add-root-action {
+  color: #ffffff;
+  background: linear-gradient(135deg, var(--yb-primary), var(--yb-violet));
+  border-color: transparent;
+  box-shadow: 0 10px 24px rgba(33, 116, 253, 0.16);
 }
 
 .outline-tree-list {
