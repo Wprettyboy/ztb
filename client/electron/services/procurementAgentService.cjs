@@ -2528,15 +2528,26 @@ function createProcurementAgentService({ app, configStore, aiService }) {
 
     const partialTasks = [];
     for (const batch of batches) {
-      const aiPayload = await aiService.requestJson({
-        messages: createAiTemplateAnalysisMessages({ template, blocks: batch, outline: scanResult.outline }),
-        temperature: 0.1,
-        timeout_ms: 300000,
-        schemaName: 'procurement_template_task_pack',
-        progressLabel: `模板 AI 解析 第 ${batch[0].pageHint} 页`,
-        failureMessage: '模型返回的模板任务 JSON 无效',
-        logTitle: '模板 AI 任务解析',
-      });
+      let aiPayload;
+      try {
+        aiPayload = await aiService.requestJson({
+          messages: createAiTemplateAnalysisMessages({ template, blocks: batch, outline: scanResult.outline }),
+          temperature: 0.1,
+          timeout_ms: 300000,
+          schemaName: 'procurement_template_task_pack',
+          progressLabel: `模板 AI 解析 第 ${batch[0].pageHint} 页`,
+          failureMessage: '模型返回的模板任务 JSON 无效',
+          logTitle: '模板 AI 任务解析',
+        });
+      } catch (error) {
+        const config = configStore.load();
+        const baseUrl = normalizeString(config.base_url || 'http://127.0.0.1:8088/v1');
+        const reason = error?.message || '未知错误';
+        const hint = /fetch failed|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|Failed to fetch/i.test(reason)
+          ? `无法连接本地文本模型服务：${baseUrl}。请先启动 C:\\llm\\gemma-4-31b-it\\start-server.ps1，确认 8088 端口可用后重试。`
+          : `模板 AI 解析失败：${reason}`;
+        return { success: false, message: hint, state };
+      }
       if (Array.isArray(aiPayload?.tasks)) {
         partialTasks.push(...aiPayload.tasks);
       }
