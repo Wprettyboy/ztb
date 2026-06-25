@@ -9,6 +9,7 @@ const { pathToFileURL } = require('node:url');
 const JSZip = require('jszip');
 const { DOMParser, XMLSerializer } = require('@xmldom/xmldom');
 const { dialog } = require('electron');
+const { PDFParse } = require('pdf-parse');
 const { getWorkspaceDir } = require('../utils/paths.cjs');
 const { parseDocumentWithConfig } = require('./fileService.cjs');
 
@@ -616,6 +617,57 @@ async function readTemplatePageTaskPack(app, template) {
       pages: [],
     };
   }
+}
+
+async function saveTemplatePageTaskPack(app, pageTaskPack) {
+  const templateId = normalizeString(pageTaskPack?.templateId || '');
+  const templateName = normalizeString(pageTaskPack?.templateName || '');
+  const pages = Array.isArray(pageTaskPack?.pages) ? pageTaskPack.pages : [];
+  if (!templateId) {
+    return {
+      templateId: '',
+      templateName,
+      pageCount: 0,
+      generatedAt: '',
+      pages: [],
+    };
+  }
+
+  const packDir = getTemplateTaskPackDir(app, templateId);
+  const pageTaskDir = getTemplatePageTaskDir(app, templateId);
+  await fs.mkdir(pageTaskDir, { recursive: true });
+  const generatedAt = pageTaskPack.generatedAt || nowIso();
+  const sortedPages = [...pages].sort((first, second) => Number(first.page || 0) - Number(second.page || 0));
+
+  await Promise.all(sortedPages.map((page) => {
+    const pageNumber = Math.max(1, Number(page.page || 1));
+    return writeJsonFile(path.join(pageTaskDir, `page-${String(pageNumber).padStart(3, '0')}.json`), page);
+  }));
+
+  const manifest = {
+    templateId,
+    templateName,
+    pageCount: Number(pageTaskPack.pageCount || sortedPages.length) || sortedPages.length,
+    generatedAt,
+    mode: pageTaskPack.mode || 'ai-page-task-semantic',
+    promptVersion: pageTaskPack.promptVersion || 'page-task-v1',
+    pages: sortedPages.map((page) => ({
+      page: page.page,
+      pageTitle: page.pageTitle || `第 ${page.page} 页`,
+      fileName: `page-${String(page.page).padStart(3, '0')}.json`,
+      taskCount: Array.isArray(page.tasks) ? page.tasks.length : 0,
+      noTaskReason: page.noTaskReason || '',
+    })),
+  };
+  await writeJsonFile(path.join(packDir, 'page-manifest.json'), manifest);
+
+  return {
+    templateId,
+    templateName,
+    pageCount: manifest.pageCount,
+    generatedAt,
+    pages: sortedPages,
+  };
 }
 
 function createTemplateQuestions(sourceTasks = []) {
@@ -2030,6 +2082,219 @@ function normalizeAiTaskPack({ template, aiPayload, blocks, outline }) {
   };
 }
 
+const PAGE_TASK_PROMPT_VERSION = 'page-task-v1';
+const PAGE_TASK_ALLOWED_TYPES = new Set(['blank', 'choice', 'multiChoice', 'compound', 'calculated']);
+const PAGE_TASK_ALLOWED_INPUT_KINDS = new Set(['short-text', 'long-text', 'select', 'multi-select', 'compound', 'number']);
+
+function createPageTaskAnalysisMessages({ template, page, pageCount }) {
+  const pageNumber = Number(page.page || 0);
+  const schemaExample = {
+    templateId: template.id,
+    templateName: template.name,
+    page: pageNumber,
+    pageTitle: '封面',
+    status: 'ready',
+    tasks: [
+      {
+        key: `page_${String(pageNumber || 1).padStart(3, '0')}_project_code`,
+        label: '项目编号',
+        type: 'blank',
+        inputKind: 'short-text',
+        required: true,
+        risk: false,
+        group: '基础信息',
+        chapter: '封面',
+        prompt: '从采购需求方案中提取项目编号，用于填写封面项目编号。',
+        placeholder: '项目编号',
+        options: [],
+        anchors: [
+          {
+            matchText: '项目编号：',
+            sourceText: '项目编号：',
+            pageHint: pageNumber,
+          },
+        ],
+      },
+    ],
+    noTaskReason: '',
+  };
+
+  return [
+    {
+      role: 'system',
+      content: [
+        '你是模板任务标注员，不是文档改写员。',
+        '你的任务是逐页阅读采购文件模板原文，判断本页哪些内容需要后续 AI 根据“采购需求方案”填写、选择或计算。',
+        '只返回一个严格 JSON 对象，不要 Markdown，不要解释，不要代码块，不要输出多余文本。',
+        '每次只处理当前页，不跨页合并，不为其他页生成任务。',
+        '不要根据经验臆造字段；只能根据当前页原文中真实存在的空白、勾选项、金额/日期/数量/比例/时限、项目范围、资格条件、评分参数、合同商务条款生成任务。',
+        '固定采购人、固定代理机构、固定地址、固定流程条款、纪律条款、说明性注释，不生成任务。',
+        '带“□”且会随项目变化的内容生成 choice 或 multiChoice。',
+        '同时包含“□”和填空的内容生成 compound。',
+        '需要按金额、比例或规则计算的内容生成 calculated。',
+        '空白、年月日、金额、数量、比例、时限、联系人、电话、邮箱、项目范围、资格条件、评分参数、合同商务条款等需要生成任务。',
+        'anchors[].sourceText 必须逐字复制当前页原文中的连续片段，不能改写，不能来自其他页。',
+        'anchors[].matchText 必须是 sourceText 中适合定位的短文本。',
+        `anchors[].pageHint 必须等于当前页码 ${pageNumber}。`,
+        '如果本页没有任务，tasks 必须为空数组，并给出明确 noTaskReason。',
+        'key 必须是英文 snake_case，并以 page_页码三位_ 开头，例如 page_003_max_price。',
+        'type 只能是 blank、choice、multiChoice、compound、calculated。',
+        'inputKind 只能是 short-text、long-text、select、multi-select、compound、number。',
+      ].join('\n'),
+    },
+    {
+      role: 'user',
+      content: [
+        `模板ID：${template.id}`,
+        `模板名称：${template.name || template.fileName}`,
+        `当前页码：${pageNumber}`,
+        `总页数：${pageCount}`,
+        '',
+        '当前页原文：',
+        page.text || '',
+        '',
+        '输出 JSON Schema 示例，字段必须完整保留：',
+        JSON.stringify(schemaExample, null, 2),
+      ].join('\n'),
+    },
+  ];
+}
+
+function normalizePageTaskType(value) {
+  const type = normalizeString(value);
+  return PAGE_TASK_ALLOWED_TYPES.has(type) ? type : 'blank';
+}
+
+function normalizePageTaskInputKind(value, type) {
+  const inputKind = normalizeString(value);
+  if (PAGE_TASK_ALLOWED_INPUT_KINDS.has(inputKind)) return inputKind;
+  if (type === 'choice') return 'select';
+  if (type === 'multiChoice') return 'multi-select';
+  if (type === 'compound') return 'compound';
+  if (type === 'calculated') return 'number';
+  return 'short-text';
+}
+
+function normalizePageTaskKey(value, pageNumber, label, index) {
+  const normalized = normalizeFieldKey(value);
+  const prefix = `page_${String(pageNumber).padStart(3, '0')}_`;
+  if (normalized.startsWith(prefix)) return normalized;
+  const fallback = normalizeFieldKey(label) || `task_${index + 1}`;
+  return `${prefix}${normalized || fallback}`;
+}
+
+function sourceTextExistsOnPage(sourceText, pageText) {
+  const source = String(sourceText || '').trim();
+  if (!source) return false;
+  if (pageText.includes(source)) return true;
+  return normalizeLooseText(pageText).includes(normalizeLooseText(source));
+}
+
+function recoverExactSourceTextFromPage(sourceText, pageText) {
+  const source = String(sourceText || '').trim();
+  const text = String(pageText || '');
+  if (!source) return '';
+  if (text.includes(source)) return source;
+
+  const target = normalizeLooseText(source);
+  if (!target) return '';
+  for (let start = 0; start < text.length; start += 1) {
+    while (start < text.length && /\s/.test(text[start])) start += 1;
+    let cursor = start;
+    let targetCursor = 0;
+    while (cursor < text.length && targetCursor < target.length) {
+      const char = text[cursor];
+      if (/\s/.test(char)) {
+        cursor += 1;
+        continue;
+      }
+      if (char.toLowerCase() !== target[targetCursor]) break;
+      cursor += 1;
+      targetCursor += 1;
+    }
+    if (targetCursor === target.length) {
+      return text.slice(start, cursor).trim();
+    }
+  }
+  return '';
+}
+
+function normalizePageTaskPayload({ template, page, pageCount, aiPayload }) {
+  const pageNumber = Number(page.page || 0);
+  const pageText = String(page.text || '');
+  const rawTasks = Array.isArray(aiPayload?.tasks) ? aiPayload.tasks : [];
+  const tasks = rawTasks.map((rawTask, taskIndex) => {
+    const label = normalizeString(rawTask?.label || rawTask?.name || rawTask?.title || '');
+    if (!label) return null;
+    const type = normalizePageTaskType(rawTask?.type);
+    const anchors = (Array.isArray(rawTask?.anchors) ? rawTask.anchors : [])
+      .map((anchor) => {
+        const sourceText = recoverExactSourceTextFromPage(anchor?.sourceText || anchor?.source_text || '', pageText);
+        if (!sourceText || !sourceTextExistsOnPage(sourceText, pageText)) return null;
+        const matchText = normalizeString(anchor?.matchText || anchor?.match_text || sourceText.slice(0, 30));
+        return {
+          matchText: sourceText.includes(matchText) ? matchText : sourceText.slice(0, 30),
+          sourceText,
+          pageHint: pageNumber,
+        };
+      })
+      .filter(Boolean);
+    if (!anchors.length) return null;
+    const key = normalizePageTaskKey(rawTask?.key || rawTask?.id, pageNumber, label, taskIndex);
+    return {
+      key,
+      label,
+      type,
+      inputKind: normalizePageTaskInputKind(rawTask?.inputKind || rawTask?.input_kind, type),
+      required: Boolean(rawTask?.required),
+      risk: Boolean(rawTask?.risk),
+      group: normalizeString(rawTask?.group) || '页面任务',
+      chapter: normalizeString(rawTask?.chapter) || normalizeString(aiPayload?.pageTitle || aiPayload?.page_title) || `第 ${pageNumber} 页`,
+      prompt: normalizeString(rawTask?.prompt) || `从采购需求方案中提取“${label}”。`,
+      placeholder: normalizeString(rawTask?.placeholder) || label,
+      options: Array.isArray(rawTask?.options) ? rawTask.options.map(normalizeString).filter(Boolean) : [],
+      anchors,
+    };
+  }).filter(Boolean);
+
+  return {
+    templateId: template.id,
+    templateName: template.name || template.fileName || '',
+    page: pageNumber,
+    pageTitle: normalizeString(aiPayload?.pageTitle || aiPayload?.page_title) || `第 ${pageNumber} 页`,
+    status: 'ready',
+    tasks,
+    noTaskReason: tasks.length ? '' : normalizeString(aiPayload?.noTaskReason || aiPayload?.no_task_reason) || '本页为固定说明或流程条款，无需根据采购需求方案回填',
+    _pageCount: pageCount,
+  };
+}
+
+async function extractPdfPageTexts(pdfPath) {
+  const parser = new PDFParse({ data: await fs.readFile(pdfPath) });
+  try {
+    const info = await parser.getInfo({ parsePageInfo: true });
+    const pageCount = Math.max(1, Number(info.total || 0));
+    const pages = [];
+    for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+      const result = await parser.getText({ partial: [pageNumber] });
+      const pageText = String(result.pages?.[0]?.text || result.text || '')
+        .replace(new RegExp(`\\n*--\\s*${pageNumber}\\s+of\\s+${pageCount}\\s*--\\s*$`), '')
+        .trim();
+      pages.push({
+        page: pageNumber,
+        text: pageText,
+      });
+    }
+    return { pageCount, pages };
+  } finally {
+    try {
+      await parser.destroy();
+    } catch {
+      // PDF parser cleanup failure should not hide the original parsing result.
+    }
+  }
+}
+
 function createFieldsFromTaskPack(taskPack) {
   return (Array.isArray(taskPack?.tasks) ? taskPack.tasks : []).flatMap((task) => (
     (Array.isArray(task.anchors) ? task.anchors : []).map((anchor) => ({
@@ -2726,142 +2991,157 @@ function createProcurementAgentService({ app, configStore, aiService }) {
       return { success: false, message: '未找到要进行 AI 解析的模板', state };
     }
 
-    const sourcePath = template.storedPath || template.normalizedPath;
-    const normalizedPath = template.normalizedPath || sourcePath;
-    const scanResult = await scanAndNormalizeTemplateDocx(sourcePath, normalizedPath, template.id, template.fileName);
-    const blocks = scanResult.blocks.filter((block) => normalizeString(block.text).length >= 2);
-    if (!blocks.length) {
-      return { success: false, message: '模板没有可供 AI 解析的原文块', state };
+    if (!template.previewPdfPath) {
+      return { success: false, message: '当前模板没有 PDF 预览，无法按页进行 AI 解析', state };
     }
 
-    const pageCount = Math.max(1, template.previewPageImages?.length || Math.ceil(blocks.length / 10));
-    const pageSize = Math.max(1, Math.ceil(blocks.length / pageCount));
-    const blocksWithPageHint = blocks.map((block, index) => ({
-      ...block,
-      pageHint: Math.min(pageCount, Math.floor(index / pageSize) + 1),
-    }));
-    const batches = [];
-    const maxBlocksPerBatch = 10;
-    for (let page = 1; page <= pageCount; page += 1) {
-      const pageBlocks = blocksWithPageHint.filter((block) => block.pageHint === page);
-      for (let start = 0; start < pageBlocks.length; start += maxBlocksPerBatch) {
-        const batch = pageBlocks.slice(start, start + maxBlocksPerBatch);
-        if (batch.length) batches.push(batch);
-      }
+    const baseDir = path.resolve(getProcurementDir(app));
+    const pdfPath = path.resolve(template.previewPdfPath);
+    if (pdfPath !== baseDir && !pdfPath.startsWith(`${baseDir}${path.sep}`)) {
+      throw new Error('PDF 预览文件不在采购智能体工作目录内');
+    }
+
+    const pdfPageTextPack = await extractPdfPageTexts(pdfPath);
+    const pages = pdfPageTextPack.pages.filter((page) => normalizeString(page.text).length >= 1);
+    if (!pages.length) {
+      return { success: false, message: 'PDF 没有可供 AI 解析的页面文本', state };
     }
 
     emitAiAnalysisProgress({
       status: 'running',
       templateId: template.id,
       templateName: template.name,
-      totalBatches: batches.length,
+      totalBatches: pages.length,
       completedBatches: 0,
       failedBatches: 0,
       generatedTasks: 0,
       concurrency,
-      message: `开始 AI 解析，共 ${batches.length} 个批次`,
+      promptVersion: PAGE_TASK_PROMPT_VERSION,
+      message: `开始逐页 AI 解析，共 ${pages.length} 页`,
     });
 
     let completedBatches = 0;
     let failedBatches = 0;
     let generatedTasks = 0;
 
-    const batchResults = await runWithConcurrency(batches, concurrency, async (batch, index) => {
+    const pageResults = await runWithConcurrency(pages, concurrency, async (page, index) => {
       const batchIndex = index + 1;
-      const streamEmitter = createStreamEmitter(template, batchIndex, batches.length);
+      const streamEmitter = createStreamEmitter(template, batchIndex, pages.length);
       emitAiAnalysisProgress({
         status: 'batch-running',
         templateId: template.id,
         templateName: template.name,
         batchIndex,
-        totalBatches: batches.length,
+        page: page.page,
+        totalBatches: pages.length,
         completedBatches,
         failedBatches,
         generatedTasks,
-        message: `正在解析第 ${batchIndex}/${batches.length} 批，第 ${batch[0].pageHint} 页附近`,
+        promptVersion: PAGE_TASK_PROMPT_VERSION,
+        message: `正在解析第 ${page.page}/${pdfPageTextPack.pageCount} 页`,
       });
-      streamEmitter.mark(`\n[第 ${batchIndex}/${batches.length} 批已发送到本地模型，等待首个Token...]\n`);
+      streamEmitter.mark(`\n[第 ${page.page}/${pdfPageTextPack.pageCount} 页已发送到模型，等待首个Token...]\n`);
       let aiPayload;
       try {
         aiPayload = await aiService.requestJson({
-          messages: createAiTemplateAnalysisMessages({ template, blocks: batch, outline: scanResult.outline }),
+          messages: createPageTaskAnalysisMessages({ template, page, pageCount: pdfPageTextPack.pageCount }),
           temperature: 0.1,
-          max_tokens: 900,
+          max_tokens: 1600,
           max_retries: 0,
           timeout_ms: 300000,
-          schemaName: 'procurement_template_task_pack',
-          progressLabel: `模板 AI 解析 第 ${batch[0].pageHint} 页`,
-          failureMessage: '模型返回的模板任务 JSON 无效',
-          logTitle: '模板 AI 任务解析',
+          schemaName: 'procurement_template_page_task',
+          progressLabel: `模板逐页任务解析 第 ${page.page} 页`,
+          failureMessage: '模型返回的页面任务 JSON 无效',
+          logTitle: '模板页面任务解析',
           streamCallback: (delta) => streamEmitter.push(delta),
           streamStatsCallback: (stats) => streamEmitter.pushStats(stats),
         });
         streamEmitter.finish();
+        const normalizedPageTask = normalizePageTaskPayload({
+          template,
+          page,
+          pageCount: pdfPageTextPack.pageCount,
+          aiPayload,
+        });
+        completedBatches += 1;
+        generatedTasks += normalizedPageTask.tasks.length;
+        emitAiAnalysisProgress({
+          status: 'batch-done',
+          templateId: template.id,
+          templateName: template.name,
+          batchIndex,
+          page: page.page,
+          totalBatches: pages.length,
+          completedBatches,
+          failedBatches,
+          generatedTasks,
+          promptVersion: PAGE_TASK_PROMPT_VERSION,
+          message: `第 ${page.page}/${pdfPageTextPack.pageCount} 页完成，生成 ${normalizedPageTask.tasks.length} 个页面任务`,
+        });
+        return { pageTask: normalizedPageTask };
       } catch (error) {
         streamEmitter.finish();
         const config = configStore.load();
         const baseUrl = normalizeString(config.base_url || 'http://127.0.0.1:8088/v1');
         const reason = error?.message || '未知错误';
         const hint = /fetch failed|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|Failed to fetch/i.test(reason)
-          ? `无法连接本地文本模型服务：${baseUrl}。请先启动 C:\\llm\\gemma-4-31b-it\\start-server.ps1，确认 8088 端口可用后重试。`
-          : `模板 AI 解析失败：${reason}`;
+          ? `无法连接本地文本模型服务：${baseUrl}。请先启动当前配置的本地模型服务，确认接口可用后重试。`
+          : `第 ${page.page} 页模板 AI 解析失败：${reason}`;
         failedBatches += 1;
         emitAiAnalysisProgress({
           status: 'batch-error',
           templateId: template.id,
           templateName: template.name,
           batchIndex,
-          totalBatches: batches.length,
+          page: page.page,
+          totalBatches: pages.length,
           completedBatches,
           failedBatches,
           generatedTasks,
+          promptVersion: PAGE_TASK_PROMPT_VERSION,
           message: hint,
         });
-        return { tasks: [], error: hint };
+        return {
+          pageTask: {
+            templateId: template.id,
+            templateName: template.name || template.fileName || '',
+            page: page.page,
+            pageTitle: `第 ${page.page} 页`,
+            status: 'error',
+            tasks: [],
+            noTaskReason: hint,
+          },
+          error: hint,
+        };
       }
-      const tasks = Array.isArray(aiPayload?.tasks) ? aiPayload.tasks : [];
-      completedBatches += 1;
-      generatedTasks += tasks.length;
-      emitAiAnalysisProgress({
-        status: 'batch-done',
-        templateId: template.id,
-        templateName: template.name,
-        batchIndex,
-        totalBatches: batches.length,
-        completedBatches,
-        failedBatches,
-        generatedTasks,
-        message: `第 ${batchIndex}/${batches.length} 批完成，识别 ${tasks.length} 个任务`,
-      });
-      return { tasks };
     });
 
-    const partialTasks = batchResults.flatMap((result) => result?.tasks || []);
-
-    const aiTaskPack = normalizeAiTaskPack({
-      template,
-      aiPayload: { tasks: partialTasks },
-      blocks: blocksWithPageHint,
-      outline: scanResult.outline,
-    });
-    if (!aiTaskPack.tasks.length) {
+    const pageTasks = pageResults.map((result) => result?.pageTask).filter(Boolean);
+    const totalPageTaskCount = pageTasks.reduce((sum, pageTask) => sum + (Array.isArray(pageTask.tasks) ? pageTask.tasks.length : 0), 0);
+    if (!totalPageTaskCount) {
       emitAiAnalysisProgress({
         status: 'error',
         templateId: template.id,
         templateName: template.name,
-        totalBatches: batches.length,
+        totalBatches: pages.length,
         completedBatches,
         failedBatches,
-        generatedTasks,
-        message: 'AI 没有识别出可用任务，请调整提示词或模板结构后重试',
+        generatedTasks: 0,
+        promptVersion: PAGE_TASK_PROMPT_VERSION,
+        message: 'AI 没有识别出可用页面任务，请调整提示词或模板结构后重试',
       });
-      return { success: false, message: 'AI 没有识别出可用任务，请调整提示词或模板结构后重试', state };
+      return { success: false, message: 'AI 没有识别出可用页面任务，请调整提示词或模板结构后重试', state };
     }
 
-    const savedTaskPack = await saveTemplateTaskPack(app, aiTaskPack);
-    const questions = createTemplateQuestions(savedTaskPack.tasks);
-    const answers = createMissingAnswers(questions);
-    const fields = answersToFields(answers, questions);
+    const savedPageTaskPack = await saveTemplatePageTaskPack(app, {
+      templateId: template.id,
+      templateName: template.name || template.fileName || '',
+      pageCount: pdfPageTextPack.pageCount,
+      generatedAt: nowIso(),
+      mode: 'ai-page-task-semantic',
+      promptVersion: PAGE_TASK_PROMPT_VERSION,
+      pages: pageTasks,
+    });
     const nextState = addLog(ensureStateShape({
       ...state,
       task: {
@@ -2869,37 +3149,35 @@ function createProcurementAgentService({ app, configStore, aiService }) {
         templateName: template.name,
       },
       activeTemplateId: template.id,
-      templateOutline: scanResult.outline,
-      templateBlocks: scanResult.blocks,
-      templateFields: createFieldsFromTaskPack(savedTaskPack),
-      templateTaskPack: savedTaskPack,
-      questions,
-      answers,
-      fields,
       templateScan: {
-        ...createTemplateScanSummary(
-          scanResult,
-          'loaded',
-          `AI 解析完成：生成 ${savedTaskPack.tasks.length} 个任务，覆盖 ${savedTaskPack.tasks.reduce((sum, task) => sum + task.anchors.length, 0)} 个锚点`,
-        ),
+        ...state.templateScan,
+        status: 'loaded',
+        message: `AI 逐页解析完成：生成 ${totalPageTaskCount} 个页面任务，覆盖 ${savedPageTaskPack.pages.length}/${pdfPageTextPack.pageCount} 页`,
+        scannedAt: state.templateScan.scannedAt || nowIso(),
+        normalizedAt: state.templateScan.normalizedAt || '',
+        outlineCount: state.templateScan.outlineCount || 0,
+        blockCount: state.templateScan.blockCount || 0,
+        fieldCount: state.templateScan.fieldCount || 0,
+        warningCount: state.templateScan.warningCount || 0,
         previewStatus: template.previewPdfPath ? 'ready' : 'unavailable',
         previewMessage: template.previewPdfPath ? 'PDF 预览已就绪' : '当前模板没有 PDF 预览',
       },
-    }), `AI 已解析模板任务包：${template.fileName}，生成 ${savedTaskPack.tasks.length} 个任务`);
+    }), `AI 已按页解析模板任务包：${template.fileName}，生成 ${totalPageTaskCount} 个页面任务`);
 
     const result = {
       success: true,
-      message: `AI 解析完成，生成 ${savedTaskPack.tasks.length} 个任务`,
+      message: `AI 逐页解析完成，生成 ${totalPageTaskCount} 个页面任务`,
       state: await persist(nextState),
     };
     emitAiAnalysisProgress({
       status: 'success',
       templateId: template.id,
       templateName: template.name,
-      totalBatches: batches.length,
+      totalBatches: pages.length,
       completedBatches,
       failedBatches,
-      generatedTasks: savedTaskPack.tasks.length,
+      generatedTasks: totalPageTaskCount,
+      promptVersion: PAGE_TASK_PROMPT_VERSION,
       message: result.message,
     });
     return result;
