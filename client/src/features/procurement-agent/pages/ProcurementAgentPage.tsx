@@ -664,7 +664,7 @@ function TemplateFieldCard({
     >
       <div>
         <strong>{field.label}{field.required ? ' *' : ''}</strong>
-        <StatusBadge label={field.type === 'choice' ? '选择题' : '填空题'} />
+        <StatusBadge label={procurementQuestionTypeLabel(field.type)} />
       </div>
       <p>{field.sourceText}</p>
       <span>{field.key} · {field.blockId} · {locationLabel}</span>
@@ -1043,9 +1043,9 @@ function FieldConfirmPanel({
                     <option value="">请选择</option>
                     {question.options.map((option) => <option key={option} value={option}>{option}</option>)}
                   </select>
-                ) : question.inputKind === 'long-text' ? (
+                ) : question.inputKind === 'long-text' || question.inputKind === 'compound' ? (
                   <textarea
-                    className="procurement-question-input is-long"
+                    className={`procurement-question-input is-long${question.inputKind === 'compound' ? ' is-compound' : ''}`}
                     value={draftValue}
                     placeholder={question.placeholder}
                     onClick={(event) => event.stopPropagation()}
@@ -1064,7 +1064,7 @@ function FieldConfirmPanel({
                 )}
 
                 <div className="procurement-question-meta">
-                  <span>{question.type === 'choice' ? '选择题' : '填空题'}</span>
+                  <span>{procurementQuestionTypeLabel(question.type)}</span>
                   <span>{question.group}</span>
                   {(answer?.sourceBlockIds || []).map((blockId) => (
                     <button
@@ -1307,6 +1307,12 @@ function formatTime(value?: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString('zh-CN', { hour12: false });
+}
+
+function procurementQuestionTypeLabel(type: string) {
+  if (type === 'compound') return '复合题';
+  if (type === 'choice' || type === 'multiChoice') return '选择题';
+  return '填空题';
 }
 
 export default ProcurementAgentPage;

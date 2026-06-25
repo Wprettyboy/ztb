@@ -300,20 +300,28 @@ const DEFAULT_TASK = {
 const TEMPLATE_FIELD_RULES = [
   { key: 'project_name', label: '项目名称', labels: ['项目名称', '工程名称', '采购项目名称'], type: 'blank', required: true },
   { key: 'project_code', label: '项目编号', labels: ['项目编号', '采购编号', '项目编码'], type: 'blank', required: true },
+  { key: 'cover_date', label: '封面日期', labels: ['年 月 日'], type: 'blank', required: true },
   { key: 'purchaser', label: '采购人', labels: ['采购人', '发包人', '建设单位'], type: 'blank', required: true },
   { key: 'agency', label: '采购代理机构', labels: ['采购代理机构', '代理机构'], type: 'blank', required: false },
+  { key: 'announcement_project_name', label: '公告首段项目名称', labels: ['拟对“ ”项目', '拟对“”项目', '（采购项目名称）询比采购公告'], type: 'blank', required: true },
   { key: 'procurement_type', label: '采购类型', labels: ['采购类型', '项目类型'], type: 'choice', required: true, options: ['工程类', '服务类', '货物类'] },
   { key: 'procurement_method', label: '采购方式', labels: ['采购方式'], type: 'choice', required: true, options: ['询比采购'] },
   { key: 'budget_amount', label: '预算金额', labels: ['预算金额', '采购预算'], type: 'blank', required: false, risk: true },
   { key: 'max_price', label: '最高限价', labels: ['最高限价', '控制价', '采购限价'], type: 'blank', required: true, risk: true },
   { key: 'bid_security', label: '询比保证金', labels: ['询比保证金', '投标保证金', '保证金'], type: 'blank', required: false, risk: true },
+  { key: 'lot_count', label: '标段划分', labels: ['标段划分'], type: 'blank', required: false },
+  { key: 'construction_content_scale', label: '建设内容及规模', labels: ['建设内容及规模', '建设内容', '建设规模'], type: 'blank', required: true, risk: true },
+  { key: 'construction_location', label: '建设地点', labels: ['建设地点', '项目地点', '实施地点'], type: 'blank', required: true },
   { key: 'contract_period', label: '工期或服务期', labels: ['工期', '工期要求', '计划工期', '服务期', '合同履行期限'], type: 'blank', required: true, risk: true },
   { key: 'project_scope', label: '采购范围', labels: ['采购范围', '建设内容', '项目概况', '工程范围'], type: 'blank', required: true },
   { key: 'qualification_requirements', label: '供应商资格要求', labels: ['供应商资格要求', '供应商资格条件', '资格要求', '资格条件'], type: 'blank', required: true, risk: true },
-  { key: 'financial_requirement', label: '财务要求', labels: ['财务要求'], type: 'choice', required: false, risk: true },
-  { key: 'qualification_requirement', label: '资质要求', labels: ['资质要求', '资质条件'], type: 'choice', required: false, risk: true },
-  { key: 'performance_requirement', label: '业绩要求', labels: ['业绩要求', '类似项目业绩'], type: 'choice', required: false, risk: true },
-  { key: 'personnel_requirement', label: '人员要求', labels: ['人员要求', '项目经理', '项目负责人', '技术负责人'], type: 'choice', required: false, risk: true },
+  { key: 'general_requirement', label: '一般资格要求', labels: ['一般要求', '具有'], type: 'blank', required: false, risk: true },
+  { key: 'financial_requirement', label: '财务要求', labels: ['财务要求', '无财务要求'], type: 'compound', required: false, risk: true, options: ['有财务要求', '无财务要求'] },
+  { key: 'qualification_requirement', label: '资质要求', labels: ['资质要求', '资质条件', '无资质要求', '安全生产许可证'], type: 'compound', required: false, risk: true, options: ['有资质要求', '无资质要求', '需要安全生产许可证'] },
+  { key: 'performance_requirement', label: '业绩要求', labels: ['业绩要求', '类似项目业绩', '无业绩要求'], type: 'compound', required: false, risk: true, options: ['有业绩要求', '无业绩要求'] },
+  { key: 'personnel_requirement', label: '人员要求', labels: ['人员要求', '项目经理', '项目负责人', '技术负责人', '其他人员', '无人员要求'], type: 'compound', required: false, risk: true, options: ['有人员要求', '无人员要求'] },
+  { key: 'other_supplier_requirement', label: '其他要求', labels: ['其他要求'], type: 'blank', required: false, risk: true },
+  { key: 'joint_venture_requirement', label: '联合体要求', labels: ['联合体'], type: 'compound', required: false, risk: true, options: ['接受联合体', '不接受联合体'] },
   { key: 'evaluation_method', label: '评审办法', labels: ['评审办法', '评标办法', '评审方法'], type: 'choice', required: true, risk: true, options: ['经评审的最低投标价法', '综合评估法'] },
   { key: 'response_deadline', label: '响应文件递交截止时间', labels: ['响应文件递交截止时间', '递交截止时间', '提交截止时间', '开启时间'], type: 'blank', required: true, risk: true },
   { key: 'response_submission_location', label: '响应文件递交地点', labels: ['响应文件递交地点', '递交地点', '提交地点', '开启地点'], type: 'blank', required: true },
@@ -331,6 +339,9 @@ const TEMPLATE_FIELD_RULES = [
   { key: 'legal_representative', label: '法定代表人', labels: ['法定代表人'], type: 'blank', required: false },
   { key: 'authorized_agent', label: '委托代理人', labels: ['委托代理人'], type: 'blank', required: false },
 ];
+
+const TEMPLATE_TASK_ORDER = new Map(TEMPLATE_FIELD_RULES.map((rule, index) => [rule.key, (index + 1) * 10]));
+const TEMPLATE_TASK_SCHEMA_VERSION = '1.1.0';
 
 const DEFAULT_TEMPLATE_CANDIDATES = [
   'C:\\Users\\23811\\Desktop\\广发\\3.16询比采购文件【工程类】.docx',
@@ -403,7 +414,7 @@ function createEmptyTemplateTaskPack(templateId = '', templateName = '') {
   return {
     templateId,
     templateName,
-    schemaVersion: '1.0.0',
+    schemaVersion: TEMPLATE_TASK_SCHEMA_VERSION,
     taskCount: 0,
     generatedAt: '',
     tasks: [],
@@ -411,6 +422,7 @@ function createEmptyTemplateTaskPack(templateId = '', templateName = '') {
 }
 
 function inferInputKind(type) {
+  if (type === 'compound') return 'compound';
   if (type === 'choice' || type === 'multiChoice') return 'select';
   return 'short-text';
 }
@@ -426,6 +438,7 @@ function inferTaskGroup(rule, outlineTitleText = '') {
 
 function createTaskPrompt(rule) {
   const base = `从采购需求方案中提取“${rule.label}”。`;
+  if (rule.type === 'compound') return `${base}该字段是“勾选项+填空”的复合题，必须同时判断应勾选哪一项，并提取需要填入空白处的文本；找不到依据时不要编造，value 置空并说明缺失依据。`;
   if (rule.risk) return `${base}该字段属于高风险字段，必须返回证据原文和出处；找不到时不要编造，value 置空。`;
   if (rule.type === 'choice') return `${base}该字段为选择题，只能从候选项中选择；找不到时 value 置空。`;
   return `${base}找不到明确答案时 value 置空，并说明缺失依据。`;
@@ -471,7 +484,7 @@ function buildTemplateTaskPack({ templateId, templateName, fields, outline }) {
       chapter: outlineTitleText,
       required: Boolean(rule.required ?? firstField.required),
       risk: Boolean(rule.risk ?? firstField.risk),
-      order: (index + 1) * 10,
+      order: TEMPLATE_TASK_ORDER.get(key) || (10000 + (index + 1) * 10),
       prompt: createTaskPrompt(rule),
       placeholder: firstField.placeholder || rule.label || key,
       options: rule.options || firstField.options || [],
@@ -482,12 +495,12 @@ function buildTemplateTaskPack({ templateId, templateName, fields, outline }) {
       createdAt: generatedAt,
       updatedAt: generatedAt,
     };
-  });
+  }).sort((first, second) => first.order - second.order);
 
   return {
     templateId,
     templateName,
-    schemaVersion: '1.0.0',
+    schemaVersion: TEMPLATE_TASK_SCHEMA_VERSION,
     taskCount: tasks.length,
     generatedAt,
     tasks,
@@ -505,7 +518,7 @@ async function saveTemplateTaskPack(app, taskPack) {
   const manifest = {
     templateId: taskPack.templateId,
     templateName: taskPack.templateName,
-    schemaVersion: taskPack.schemaVersion || '1.0.0',
+    schemaVersion: taskPack.schemaVersion || TEMPLATE_TASK_SCHEMA_VERSION,
     taskCount: tasks.length,
     generatedAt: taskPack.generatedAt || nowIso(),
     taskKeys: tasks.map((task) => task.key),
@@ -541,7 +554,7 @@ async function readTemplateTaskPack(app, template) {
     return {
       templateId,
       templateName: manifest.templateName || template?.name || '',
-      schemaVersion: manifest.schemaVersion || '1.0.0',
+      schemaVersion: manifest.schemaVersion || TEMPLATE_TASK_SCHEMA_VERSION,
       taskCount: tasks.length,
       generatedAt: manifest.generatedAt || '',
       tasks: tasks.sort((first, second) => Number(first.order || 0) - Number(second.order || 0)),
@@ -1061,14 +1074,26 @@ function isTemplateBlankTail(tail) {
   if (/^[（(【\[]\s*[）)】\]]/.test(normalized)) return true;
   if (/^[□☐☑]/.test(normalized)) return true;
   if (/[\u4e00-\u9fff]\s+(?:年|月|日|个|家|级|证|部门|专业|万元|元|%|％)/.test(normalized)) return true;
-  if (/(?:人民币|金额|大写|下浮|不少于|不超过|具有|须为|至)\s+/.test(normalized)) return true;
+  if (/(?:人民币|金额|大写|下浮|不少于|不超过|包括但不限于|具有|须为|至)\s+/.test(normalized)) return true;
   if (/^(人民币|元|万元|个|项|标段|日历天|天|%|％)(?=$|[\s，,。；;）)]|[（(])/.test(normalized)) return true;
   if (/^（[^）]*(以此为准|自行填写|填写|填列|采购项目名称|项目名称|项目编号)[^）]*）/.test(normalized)) return true;
   return !hasMeaningfulFilledValue(normalized);
 }
 
 function findTemplateFieldMatch(text, rule) {
+  const value = normalizeString(text);
+  if (rule.key === 'cover_date' && /^年\s*月\s*日$/.test(value)) return '年 月 日';
+  if (rule.key === 'announcement_project_name' && /拟对\s*“\s*”\s*项目/.test(value)) return '拟对“ ”项目';
+  if (rule.key === 'announcement_project_name' && /（采购项目名称）\s*询比采购公告/.test(value)) return '（采购项目名称）询比采购公告';
+  if (rule.key === 'general_requirement' && /^1[.．、]\s*具有\s*[；;]?$/.test(value)) return '具有';
+  if (rule.key === 'project_scope' && /采购范围\s*[：:].*包括但不限于/.test(value)) return '采购范围';
+  if (rule.key === 'performance_requirement' && /^□\s*近年/.test(value)) return '近年类似项目';
+  if (rule.key === 'joint_venture_requirement') {
+    return /本次采购.*（\s*□接受\s*□不接受\s*）\s*联合体/.test(value) ? '联合体' : '';
+  }
+
   for (const label of rule.labels) {
+    if (rule.type === 'compound' && value.includes(label)) return label;
     const tail = getTailAfterLabel(text, label);
     if (tail === null) continue;
     const hasChoice = /□|☐|☑/.test(tail);
@@ -1816,23 +1841,29 @@ function createProcurementAgentService({ app, configStore, aiService }) {
         return persist(addLog(state, `已清理 ${dedupedLibrary.removed.length} 个重复模板记录`));
       }
       const activeTemplate = state.templateLibrary.find((template) => template.id === state.activeTemplateId);
-      if (activeTemplate && !state.templateTaskPack.tasks.length) {
+      if (activeTemplate && (!state.templateTaskPack.tasks.length || state.templateTaskPack.schemaVersion !== TEMPLATE_TASK_SCHEMA_VERSION)) {
         const taskPack = await readTemplateTaskPack(app, activeTemplate);
-        if (taskPack.tasks.length) {
+        if (taskPack.tasks.length && taskPack.schemaVersion === TEMPLATE_TASK_SCHEMA_VERSION) {
           return persist({
             ...state,
             templateTaskPack: taskPack,
           });
         }
-        if (state.templateFields.length) {
+        const sourcePath = activeTemplate.storedPath || activeTemplate.normalizedPath;
+        const normalizedPath = activeTemplate.normalizedPath || sourcePath;
+        if (sourcePath) {
+          const scanResult = await scanAndNormalizeTemplateDocx(sourcePath, normalizedPath, activeTemplate.id, activeTemplate.fileName);
           const generatedTaskPack = await saveTemplateTaskPack(app, buildTemplateTaskPack({
             templateId: activeTemplate.id,
             templateName: activeTemplate.name,
-            fields: state.templateFields,
-            outline: state.templateOutline,
+            fields: scanResult.fields,
+            outline: scanResult.outline,
           }));
           return persist({
             ...state,
+            templateOutline: scanResult.outline,
+            templateBlocks: scanResult.blocks,
+            templateFields: scanResult.fields,
             templateTaskPack: generatedTaskPack,
           });
         }
@@ -2270,7 +2301,7 @@ function createProcurementAgentService({ app, configStore, aiService }) {
 
     const scanResult = await scanAndNormalizeTemplateDocx(sourcePath, normalizedPath, template.id, template.fileName);
     let taskPack = await readTemplateTaskPack(app, template);
-    if (!taskPack.tasks.length) {
+    if (!taskPack.tasks.length || taskPack.schemaVersion !== TEMPLATE_TASK_SCHEMA_VERSION) {
       taskPack = await saveTemplateTaskPack(app, buildTemplateTaskPack({
         templateId: template.id,
         templateName: template.name,

@@ -1,7 +1,7 @@
 export type ProcurementFieldStatus = 'confirmed' | 'pending' | 'risk' | 'missing';
 export type ProcurementExtractionStatus = 'idle' | 'parsed' | 'extracting' | 'extracted' | 'error';
-export type ProcurementQuestionType = 'blank' | 'choice' | 'multiChoice';
-export type ProcurementQuestionInputKind = 'short-text' | 'long-text' | 'select';
+export type ProcurementQuestionType = 'blank' | 'choice' | 'multiChoice' | 'compound';
+export type ProcurementQuestionInputKind = 'short-text' | 'long-text' | 'select' | 'compound';
 
 export interface ProcurementTask {
   id: string;

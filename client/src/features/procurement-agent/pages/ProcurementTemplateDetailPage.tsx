@@ -330,12 +330,18 @@ function TemplateReaderTaskCard({
     >
       <div>
         <strong>{task.label}{task.required ? ' *' : ''}</strong>
-        <span className="procurement-template-reader-chip">{task.type === 'choice' ? '选择题' : '填空题'}</span>
+        <span className="procurement-template-reader-chip">{templateTaskTypeLabel(task.type)}</span>
       </div>
       <p>{task.prompt || anchors[0]?.sourceText || template.fileName}</p>
       <span>{task.key} · {anchors.length} 个锚点 · {locationLabel}</span>
     </button>
   );
+}
+
+function templateTaskTypeLabel(type: string) {
+  if (type === 'compound') return '复合题';
+  if (type === 'choice' || type === 'multiChoice') return '选择题';
+  return '填空题';
 }
 
 export default ProcurementTemplateDetailPage;
