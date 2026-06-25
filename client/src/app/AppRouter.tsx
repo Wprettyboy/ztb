@@ -2,6 +2,7 @@ import type { SectionId } from '../shared/types/navigation';
 import { getAppMenuItemById } from './menuConfig';
 import ExportFormatPage from '../features/export-format/pages/ExportFormatPage';
 import KnowledgeBasePage from '../features/knowledge-base/pages/KnowledgeBasePage';
+import ProcurementDocumentGenerationPage from '../features/procurement-agent/pages/ProcurementDocumentGenerationPage';
 import ProcurementTemplateDetailPage from '../features/procurement-agent/pages/ProcurementTemplateDetailPage';
 import ProcurementTemplateLibraryPage from '../features/procurement-agent/pages/ProcurementTemplateLibraryPage';
 import SettingsPage from '../features/settings/pages/SettingsPage';
@@ -22,6 +23,8 @@ function AppRouter({ activeSection, developerMode, onDeveloperModeChange, onSect
   switch (routedSection) {
     case 'procurement-template-library':
       return <ProcurementTemplateLibraryPage onNavigate={onSectionChange} />;
+    case 'procurement-document-generation':
+      return <ProcurementDocumentGenerationPage onNavigate={onSectionChange} />;
     case 'procurement-template-detail':
       return <ProcurementTemplateDetailPage onNavigate={onSectionChange} />;
     case 'technical-plan':

@@ -2,6 +2,7 @@ export type SectionId =
   | 'procurement-agent'
   | 'procurement-template-library'
   | 'procurement-template-detail'
+  | 'procurement-document-generation'
   | 'bid-generation'
   | 'technical-plan'
   | 'existing-plan-expansion'

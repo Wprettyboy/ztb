@@ -13,6 +13,12 @@ export const appMenuItems: AppMenuItem[] = [
         icon: 'procurement',
       },
       {
+        id: 'procurement-document-generation',
+        label: '招标文件智能生成',
+        description: '选择模板、上传需求并填充任务包',
+        icon: 'document',
+      },
+      {
         id: 'procurement-template-detail',
         label: '模板详情查看',
         description: '查看选中模板的大纲、原文预览和待填字段',

@@ -15,6 +15,7 @@ const navigationIcons: Record<SectionId, ComponentType<SVGProps<SVGSVGElement>>>
   'procurement-agent': ProcurementIcon,
   'procurement-template-library': ProcurementIcon,
   'procurement-template-detail': DocumentIcon,
+  'procurement-document-generation': BidCheckIcon,
   'bid-generation': BidGenerationIcon,
   'technical-plan': DocumentIcon,
   'existing-plan-expansion': DocumentIcon,
