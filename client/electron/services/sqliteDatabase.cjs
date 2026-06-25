@@ -850,37 +850,8 @@ const schemaHealthTableGroups = [
   },
   {
     version: 2,
-    tables: [
-      'duplicate_check_meta',
-      'duplicate_check_files',
-      'duplicate_check_tasks',
-      'duplicate_check_analysis_sections',
-      'duplicate_check_content_files',
-      'duplicate_check_metadata_items',
-      'duplicate_check_outline_items',
-      'duplicate_check_outline_groups',
-      'duplicate_check_outline_pairwise',
-      'duplicate_check_content_duplicates',
-      'duplicate_check_content_occurrences',
-      'duplicate_check_image_files',
-      'duplicate_check_duplicate_images',
-      'duplicate_check_image_occurrences',
-    ],
-    repair: createDuplicateCheckSchema,
-  },
-  {
-    version: 2,
-    tables: [
-      'rejection_check_meta',
-      'rejection_check_documents',
-      'rejection_check_tasks',
-      'rejection_check_extraction',
-      'rejection_check_results',
-      'rejection_check_risk_findings',
-      'rejection_check_typo_findings',
-      'rejection_check_logic_findings',
-    ],
-    repair: createRejectionCheckSchema,
+    tables: [],
+    repair: () => {},
   },
   {
     version: 3,
@@ -1080,8 +1051,8 @@ const migrations = [
   },
   {
     version: 2,
-    description: '新增标书查重和废标项检查 SQLite 表结构',
-    up: createWorkspaceV2Schema,
+    description: '精简版跳过标书查重和废标项检查历史表结构',
+    up: () => {},
   },
   {
     version: 3,
@@ -1130,8 +1101,8 @@ const migrations = [
   },
   {
     version: 12,
-    description: '废标项检查支持多份投标文件',
-    up: migrateRejectionCheckMultiBidDocuments,
+    description: '精简版跳过废标项检查历史迁移',
+    up: () => {},
   },
 ];
 

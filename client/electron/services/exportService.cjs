@@ -1,6 +1,5 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const zlib = require('node:zlib');
 const { fileURLToPath } = require('node:url');
 const { app, dialog, nativeImage } = require('electron');
 const cheerio = require('cheerio');
@@ -33,8 +32,6 @@ const {
 const MAX_IMAGE_WIDTH = 520;
 const NUMBERING_REFERENCE_PREFIX = 'technical-plan-numbering';
 const DOCX_TABLE_WIDTH_TWIPS = 9000;
-const MERMAID_EXPORT_RETRY_ATTEMPTS = 2;
-const MERMAID_EXPORT_RETRY_DELAY_MS = 3000;
 
 // 纸张尺寸 mm（portrait 模式 width × height），与 Renderer exportFormat.ts 保持一致
 const PAPER_DIMENSIONS_MM = {
@@ -50,18 +47,6 @@ const PAPER_DIMENSIONS_MM = {
 
 function mmToTwips(mm) {
   return Math.round(mm * 56.6929); // 1mm = 1440 twips ÷ 25.4 mm/inch
-}
-
-function encodeMermaidForInk(code) {
-  const state = JSON.stringify({
-    code: String(code || ''),
-    mermaid: { theme: 'default' },
-  });
-  return `pako:${zlib.deflateSync(Buffer.from(state, 'utf-8')).toString('base64url')}`;
-}
-
-function mermaidInkUrl(code) {
-  return `https://mermaid.ink/img/${encodeMermaidForInk(code)}?type=png&bgColor=!white`;
 }
 
 function delay(ms) {
@@ -632,12 +617,7 @@ async function loadImage(source, context = {}) {
   }
 
   if (/^https?:\/\//i.test(url)) {
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`图片下载失败：${url}`);
-    }
-    const type = imageTypeFromMime(response.headers.get('content-type')) || imageTypeFromPath(new URL(url).pathname);
-    return { buffer: Buffer.from(await response.arrayBuffer()), type };
+    return null;
   }
 
   const fileUrlPrefix = 'file://';
@@ -1158,27 +1138,19 @@ async function markdownNodesToDocx(nodes = [], context = {}, options = {}) {
       if (String(node.lang || '').toLowerCase() === 'mermaid') {
         const nextIndex = (context.convertedMermaidCount || 0) + 1;
         const total = context.stats?.mermaidCount || nextIndex;
-        writeExportLog(context, 'export.mermaid.started', {
+        writeExportLog(context, 'export.mermaid.downgraded', {
           mermaid_index: nextIndex,
           total,
           code_metrics: textMetrics(node.value),
         });
-        reportConversionProgress(context, `正在转换 Mermaid 图 ${nextIndex}/${total}，可能需要联网等待。`);
-        blocks.push(await imageParagraphFromSource(mermaidInkUrl(node.value), 'Mermaid 图', context, {
-          loadRetry: {
-            retryAttempts: MERMAID_EXPORT_RETRY_ATTEMPTS,
-            retryDelayMs: MERMAID_EXPORT_RETRY_DELAY_MS,
-            onRetry: (attempt) => {
-              reportConversionProgress(context, `Mermaid 图 ${nextIndex}/${total} 转换失败，3 秒后第 ${attempt} 次重试。`);
-            },
-          },
+        addWarning(context, `第 ${nextIndex}/${total} 个 Mermaid 代码块已按代码保留，精简版不调用第三方转图服务。`);
+        reportConversionProgress(context, `正在保留 Mermaid 代码块 ${nextIndex}/${total}。`);
+        blocks.push(paragraph([new TextRun({ text: cleanText(node.value), font: 'Consolas', size: 21, color: '243048' })], {
+          shading: { type: ShadingType.CLEAR, fill: 'F6F9FF' },
+          indent: { left: 260, right: 260 },
         }));
         context.convertedMermaidCount = nextIndex;
-        writeExportLog(context, 'export.mermaid.completed', {
-          mermaid_index: nextIndex,
-          total,
-        });
-        reportConversionProgress(context, `Mermaid 图 ${nextIndex}/${total} 已处理。`);
+        reportConversionProgress(context, `Mermaid 代码块 ${nextIndex}/${total} 已保留。`);
       } else {
         blocks.push(paragraph([new TextRun({ text: cleanText(node.value), font: 'Consolas', size: 21, color: '243048' })], {
           shading: { type: ShadingType.CLEAR, fill: 'F6F9FF' },
@@ -1383,7 +1355,7 @@ async function buildDocxResult(payload, options = {}) {
   ];
 
   reportProgress(context, 10, stats.mermaidCount
-    ? `准备导出正文，并转换 ${stats.mermaidCount} 张 Mermaid 图。`
+    ? `准备导出正文，并保留 ${stats.mermaidCount} 个 Mermaid 代码块。`
     : '准备导出正文。');
   await addOutlineItems(children, payload.outline || [], context);
   reportProgress(context, 90, '正在生成 Word 文件。');
@@ -1515,7 +1487,7 @@ function createExportService({ configStore } = {}) {
 
       const progressContext = { onProgress, warnings: [], stats };
       reportProgress(progressContext, 2, stats.mermaidCount
-        ? `检测到 ${stats.mermaidCount} 张 Mermaid 图，导出时会转换为 Word 图片。`
+        ? `检测到 ${stats.mermaidCount} 个 Mermaid 代码块，导出时将按代码保留。`
         : '正在准备 Word 导出。');
       const defaultFilename = `${sanitizeFilename(payload.project_name || '标书文档')}.docx`;
       const defaultDir = app?.getPath ? app.getPath('documents') : process.env.USERPROFILE || process.cwd();

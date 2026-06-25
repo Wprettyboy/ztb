@@ -8,27 +8,7 @@ const bridge = {
   saveGpuHardwareAccelerationPreference: (enabled) => ipcRenderer.invoke('app:save-gpu-hardware-acceleration-preference', enabled),
   startGpuHardwareAccelerationTrial: () => ipcRenderer.invoke('app:start-gpu-hardware-acceleration-trial'),
   relaunchWithGpuHardwareAccelerationDisabled: () => ipcRenderer.invoke('app:relaunch-with-gpu-hardware-acceleration-disabled'),
-  getLatestVersion: () => ipcRenderer.invoke('app:get-latest-version'),
-  getUpdateDownloadUrl: () => ipcRenderer.invoke('app:get-update-download-url'),
   openExternal: (url) => ipcRenderer.invoke('app:open-external', url),
-  checkUpdate: () => ipcRenderer.invoke('app:check-update'),
-  startUpdate: () => ipcRenderer.invoke('app:start-update'),
-  quitAndInstall: () => ipcRenderer.invoke('app:quit-and-install'),
-  onUpdateProgress: (callback) => {
-    const listener = (_event, payload) => callback(payload);
-    ipcRenderer.on('app:update-progress', listener);
-    return () => ipcRenderer.removeListener('app:update-progress', listener);
-  },
-  onUpdateDownloaded: (callback) => {
-    const listener = (_event, payload) => callback(payload);
-    ipcRenderer.on('app:update-downloaded', listener);
-    return () => ipcRenderer.removeListener('app:update-downloaded', listener);
-  },
-  onUpdateError: (callback) => {
-    const listener = (_event, payload) => callback(payload);
-    ipcRenderer.on('app:update-error', listener);
-    return () => ipcRenderer.removeListener('app:update-error', listener);
-  },
   database: {
     getStatus: () => ipcRenderer.invoke('workspace-database:get-status'),
     onStatus: (callback) => {
@@ -48,8 +28,18 @@ const bridge = {
     requestJson: (request) => ipcRenderer.invoke('ai:request-json', request),
     testImageModel: (config) => ipcRenderer.invoke('ai:test-image-model', config),
   },
-  file: {
-    selectDuplicateCheckFiles: (options) => ipcRenderer.invoke('file:select-duplicate-check-files', options),
+  procurementAgent: {
+    loadState: () => ipcRenderer.invoke('procurement-agent:load-state'),
+    saveTask: (payload) => ipcRenderer.invoke('procurement-agent:save-task', payload),
+    importTemplateDocument: (payload) => ipcRenderer.invoke('procurement-agent:import-template-document', payload),
+    importDemandDocument: () => ipcRenderer.invoke('procurement-agent:import-demand-document'),
+    extractFields: () => ipcRenderer.invoke('procurement-agent:extract-fields'),
+    updateField: (payload) => ipcRenderer.invoke('procurement-agent:update-field', payload),
+    acceptHighConfidence: (threshold) => ipcRenderer.invoke('procurement-agent:accept-high-confidence', threshold),
+    readTemplatePdf: (payload) => ipcRenderer.invoke('procurement-agent:read-template-pdf', payload),
+    selectTemplate: (payload) => ipcRenderer.invoke('procurement-agent:select-template', payload),
+    deleteTemplate: (payload) => ipcRenderer.invoke('procurement-agent:delete-template', payload),
+    clear: () => ipcRenderer.invoke('procurement-agent:clear'),
   },
   knowledgeBase: {
     getMigrationStatus: () => ipcRenderer.invoke('knowledge-base:get-migration-status'),
@@ -92,31 +82,12 @@ const bridge = {
     saveChapterContent: (payload) => ipcRenderer.invoke('technical-plan:save-chapter-content', payload),
     clear: () => ipcRenderer.invoke('technical-plan:clear'),
   },
-  duplicateCheck: {
-    loadState: () => ipcRenderer.invoke('duplicate-check:load-state'),
-    saveFiles: (payload) => ipcRenderer.invoke('duplicate-check:save-files', payload),
-    saveUiState: (payload) => ipcRenderer.invoke('duplicate-check:save-ui-state', payload),
-    updateState: (partial) => ipcRenderer.invoke('duplicate-check:update-state', partial),
-    clear: () => ipcRenderer.invoke('duplicate-check:clear'),
-  },
-  rejectionCheck: {
-    loadState: () => ipcRenderer.invoke('rejection-check:load-state'),
-    importDocument: (role) => ipcRenderer.invoke('rejection-check:import-document', role),
-    importTenderFromTechnicalPlan: () => ipcRenderer.invoke('rejection-check:import-tender-from-technical-plan'),
-    removeDocument: (role, documentId) => ipcRenderer.invoke('rejection-check:remove-document', role, documentId),
-    saveUiState: (payload) => ipcRenderer.invoke('rejection-check:save-ui-state', payload),
-    updateState: (partial) => ipcRenderer.invoke('rejection-check:update-state', partial),
-    clear: () => ipcRenderer.invoke('rejection-check:clear'),
-  },
   tasks: {
     startBidAnalysis: (payload) => ipcRenderer.invoke('tasks:start-bid-analysis', payload),
     startOutlineGeneration: (payload) => ipcRenderer.invoke('tasks:start-outline-generation', payload),
     startGlobalFactsGeneration: (payload) => ipcRenderer.invoke('tasks:start-global-facts-generation', payload),
     startContentGeneration: (payload) => ipcRenderer.invoke('tasks:start-content-generation', payload),
     pauseContentGeneration: () => ipcRenderer.invoke('tasks:pause-content-generation'),
-    startRejectionItemsExtraction: (payload) => ipcRenderer.invoke('tasks:start-rejection-items-extraction', payload),
-    startRejectionCheck: (payload) => ipcRenderer.invoke('tasks:start-rejection-check', payload),
-    startDuplicateAnalysis: (payload) => ipcRenderer.invoke('tasks:start-duplicate-analysis', payload),
     getActiveTasks: () => ipcRenderer.invoke('tasks:get-active'),
     onTaskEvent: (callback) => {
       ipcRenderer.send('tasks:subscribe');

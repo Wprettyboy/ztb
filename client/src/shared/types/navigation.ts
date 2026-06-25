@@ -1,23 +1,13 @@
 export type SectionId =
+  | 'procurement-agent'
+  | 'procurement-template-library'
+  | 'procurement-template-detail'
   | 'bid-generation'
   | 'technical-plan'
   | 'existing-plan-expansion'
-  | 'business-bid'
   | 'knowledge-base'
   | 'document-knowledge-base'
-  | 'image-knowledge-base'
-  | 'resources'
-  | 'bid-check'
-  | 'duplicate-check'
-  | 'rejection-check'
-  | 'ai-evaluation'
   | 'export-format'
-  | 'bid-opportunity'
-  | 'developer-test'
-  | 'developer-json-test'
-  | 'developer-prompt-lab'
-  | 'developer-parser-sandbox'
-  | 'developer-export-preview'
   | 'settings';
 
 export interface AppMenuNotice {
@@ -30,7 +20,8 @@ export interface AppSubMenuItem {
   id: SectionId;
   label: string;
   description: string;
-  icon?: 'document' | 'expand' | 'briefcase' | 'compare' | 'shield' | 'code' | 'prompt' | 'file' | 'export' | 'tool';
+  icon?: 'document' | 'expand' | 'procurement';
+  hidden?: boolean;
   notice?: AppMenuNotice;
 }
 

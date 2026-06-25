@@ -1,27 +1,32 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const crypto = require('node:crypto');
 const { getConfigFilePath } = require('../utils/paths.cjs');
 
 const textModelProviders = ['jinlong', 'volcengine', 'deepseek', 'longcat', 'custom'];
 const imageModelProviders = ['jinlong', 'volcengine', 'google-ai-studio', 'custom'];
 const aiRequestModes = ['normal', 'stream'];
-const updateChannels = ['github', 'cloudflare'];
 const DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT = 400000;
+const LOCAL_GEMMA_TEXT_MODEL_PROFILE = {
+  api_key: 'local-llama',
+  base_url: 'http://127.0.0.1:8088/v1',
+  model_name: 'gemma-4-31B_q4_0-it.gguf',
+  context_length_limit: 8192,
+  request_mode: 'stream',
+};
 
 const textProviderBaseUrls = {
-  jinlong: 'https://jlaudeapi.com/v1',
-  volcengine: 'https://ark.cn-beijing.volces.com/api/v3',
-  deepseek: 'https://api.deepseek.com',
-  longcat: 'https://api.longcat.chat/openai/v1',
+  jinlong: '',
+  volcengine: '',
+  deepseek: '',
+  longcat: '',
   custom: '',
 };
 
 const defaultTextModelProfiles = {
   jinlong: {
     api_key: '',
-    base_url: textProviderBaseUrls.jinlong,
-    model_name: 'gpt-3.5-turbo',
+    base_url: '',
+    model_name: '',
     context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT,
     request_mode: 'stream',
   },
@@ -47,18 +52,14 @@ const defaultTextModelProfiles = {
     request_mode: 'stream',
   },
   custom: {
-    api_key: '',
-    base_url: '',
-    model_name: '',
-    context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT,
-    request_mode: 'stream',
+    ...LOCAL_GEMMA_TEXT_MODEL_PROFILE,
   },
 };
 
 const defaultImageModelProfiles = {
   jinlong: {
     provider: 'jinlong',
-    base_url: 'https://jlaudeapi.com/v1',
+    base_url: '',
     api_key: '',
     model_name: '',
     request_mode: 'stream',
@@ -68,7 +69,7 @@ const defaultImageModelProfiles = {
   },
   volcengine: {
     provider: 'volcengine',
-    base_url: 'https://ark.cn-beijing.volces.com/api/v3',
+    base_url: '',
     api_key: '',
     model_name: '',
     request_mode: 'stream',
@@ -78,9 +79,9 @@ const defaultImageModelProfiles = {
   },
   'google-ai-studio': {
     provider: 'google-ai-studio',
-    base_url: 'https://generativelanguage.googleapis.com/v1beta',
+    base_url: '',
     api_key: '',
-    model_name: 'gemini-3.1-flash-image-preview',
+    model_name: '',
     request_mode: 'stream',
     status: 'untested',
     tested_at: '',
@@ -134,44 +135,21 @@ const defaultExportFormat = {
 };
 
 const defaultConfig = {
-  text_model_provider: 'jinlong',
+  text_model_provider: 'custom',
   text_model_profiles: defaultTextModelProfiles,
-  api_key: '',
-  base_url: textProviderBaseUrls.jinlong,
-  model_name: 'gpt-3.5-turbo',
-  context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT,
-  request_mode: 'stream',
+  ...LOCAL_GEMMA_TEXT_MODEL_PROFILE,
   image_model: {
-    ...defaultImageModelProfiles.jinlong,
+    ...defaultImageModelProfiles.custom,
   },
   image_model_profiles: defaultImageModelProfiles,
   file_parser: {
     provider: 'local',
-    mineru_token: '',
   },
-  update_channel: 'github',
   gpu_hardware_acceleration_enabled: true,
   gpu_hardware_acceleration_configured: true,
   export_format: defaultExportFormat,
   developer_mode: false,
-  analytics_client_id: '',
-  analytics_created_at: '',
 };
-
-function createAnalyticsClientId() {
-  return crypto.randomUUID();
-}
-
-function createAnalyticsCreatedAt() {
-  const parts = new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(new Date());
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.year}-${values.month}-${values.day}`;
-}
 
 function isTextModelProvider(value) {
   return textModelProviders.includes(value);
@@ -185,10 +163,6 @@ function normalizeAiRequestMode(value, fallback = 'stream') {
   return aiRequestModes.includes(value) ? value : fallback;
 }
 
-function normalizeUpdateChannel(value, fallback = defaultConfig.update_channel) {
-  return updateChannels.includes(value) ? value : fallback;
-}
-
 function normalizeTextContextLengthLimit(value, fallback = DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
@@ -197,12 +171,12 @@ function normalizeTextContextLengthLimit(value, fallback = DEFAULT_TEXT_CONTEXT_
 function normalizeTextModelProfile(provider, profile) {
   const defaults = defaultTextModelProfiles[provider];
   const source = profile || {};
-  const sourceBaseUrl = provider === 'custom'
-    ? source.base_url !== undefined ? source.base_url : defaults.base_url
-    : defaults.base_url;
+  if (provider === 'custom' && profile && !hasTextModelProfileData(profile)) {
+    return { ...defaults };
+  }
   return {
     api_key: source.api_key !== undefined ? source.api_key : defaults.api_key,
-    base_url: sourceBaseUrl,
+    base_url: source.base_url !== undefined ? source.base_url : defaults.base_url,
     model_name: source.model_name !== undefined ? source.model_name : defaults.model_name,
     context_length_limit: normalizeTextContextLengthLimit(source.context_length_limit, defaults.context_length_limit),
     request_mode: normalizeAiRequestMode(source.request_mode, defaults.request_mode),
@@ -221,12 +195,12 @@ function normalizeTextModelProfiles(sourceProfiles) {
 }
 
 function textProfileFromFlatConfig(source, fallback, provider) {
-  const sourceBaseUrl = provider === 'custom'
-    ? source.base_url !== undefined ? source.base_url : fallback.base_url
-    : fallback.base_url;
+  if (provider === 'custom' && !hasTextModelProfileData(source)) {
+    return { ...fallback };
+  }
   return {
     api_key: source.api_key !== undefined ? source.api_key : fallback.api_key,
-    base_url: sourceBaseUrl,
+    base_url: source.base_url !== undefined ? source.base_url : fallback.base_url,
     model_name: source.model_name !== undefined ? source.model_name : fallback.model_name,
     context_length_limit: normalizeTextContextLengthLimit(source.context_length_limit !== undefined ? source.context_length_limit : fallback.context_length_limit, fallback.context_length_limit),
     request_mode: normalizeAiRequestMode(source.request_mode !== undefined ? source.request_mode : fallback.request_mode, fallback.request_mode),
@@ -268,9 +242,7 @@ function normalizeImageModelProfile(provider, profile) {
   const source = profile || {};
   return {
     provider,
-    base_url: provider === 'custom'
-      ? source.base_url !== undefined ? source.base_url : defaults.base_url
-      : defaults.base_url,
+    base_url: source.base_url !== undefined ? source.base_url : defaults.base_url,
     api_key: source.api_key !== undefined ? source.api_key : defaults.api_key,
     model_name: source.model_name !== undefined ? source.model_name : defaults.model_name,
     request_mode: normalizeAiRequestMode(source.request_mode, defaults.request_mode),
@@ -386,16 +358,12 @@ function normalizeConfig(config) {
     image_model: activeImageProfile,
     image_model_profiles: imageModelProfiles,
     file_parser: {
-      provider: fileParser.provider || defaultConfig.file_parser.provider,
-      mineru_token: fileParser.mineru_token || defaultConfig.file_parser.mineru_token,
+      provider: 'local',
     },
-    update_channel: normalizeUpdateChannel(source.update_channel),
     gpu_hardware_acceleration_enabled: gpuHardwareAccelerationEnabled,
     gpu_hardware_acceleration_configured: gpuHardwareAccelerationConfigured === false ? true : gpuHardwareAccelerationConfigured,
     export_format: normalizeExportFormat(source.export_format),
     developer_mode: source.developer_mode === undefined ? defaultConfig.developer_mode : Boolean(source.developer_mode),
-    analytics_client_id: source.analytics_client_id || defaultConfig.analytics_client_id,
-    analytics_created_at: source.analytics_created_at || defaultConfig.analytics_created_at,
   };
 }
 
@@ -417,18 +385,6 @@ function createConfigStore(app) {
     }
   }
 
-  function withAnalyticsIdentity(config) {
-    if (config.analytics_client_id && config.analytics_created_at) {
-      return config;
-    }
-
-    return {
-      ...config,
-      analytics_client_id: config.analytics_client_id || createAnalyticsClientId(),
-      analytics_created_at: config.analytics_created_at || createAnalyticsCreatedAt(),
-    };
-  }
-
   return {
     getConfigFilePath() {
       return configFile;
@@ -436,7 +392,7 @@ function createConfigStore(app) {
 
     load() {
       if (!fs.existsSync(configFile)) {
-        const config = withAnalyticsIdentity(normalizeConfig());
+        const config = normalizeConfig();
         persist(config);
         return config;
       }
@@ -445,11 +401,10 @@ function createConfigStore(app) {
         const raw = fs.readFileSync(configFile, 'utf-8');
         const parsedConfig = JSON.parse(raw);
         const config = normalizeConfig(parsedConfig);
-        const nextConfig = withAnalyticsIdentity(config);
-        if (JSON.stringify(parsedConfig) !== JSON.stringify(nextConfig)) {
-          persist(nextConfig);
+        if (JSON.stringify(parsedConfig) !== JSON.stringify(config)) {
+          persist(config);
         }
-        return nextConfig;
+        return config;
       } catch (error) {
         throw new Error(`配置文件读取失败：${error.message}`);
       }
@@ -460,7 +415,7 @@ function createConfigStore(app) {
         const currentConfig = fs.existsSync(configFile)
           ? normalizeConfig(JSON.parse(fs.readFileSync(configFile, 'utf-8')))
           : normalizeConfig();
-        const nextConfig = withAnalyticsIdentity(normalizeConfig({
+        const nextConfig = normalizeConfig({
           ...currentConfig,
           ...config,
           text_model_profiles: {
@@ -471,9 +426,7 @@ function createConfigStore(app) {
             ...currentConfig.image_model_profiles,
             ...(config && config.image_model_profiles ? config.image_model_profiles : {}),
           },
-          analytics_client_id: config?.analytics_client_id || currentConfig.analytics_client_id,
-          analytics_created_at: config?.analytics_created_at || currentConfig.analytics_created_at,
-        }));
+        });
         persist(nextConfig);
         return { success: true, message: '配置已保存', config_path: configFile };
       } catch (error) {

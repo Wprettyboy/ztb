@@ -1,12 +1,11 @@
 import type { ChatCompletionRequest, JsonCompletionRequest } from './ai';
-import type { DuplicateCheckWorkspaceState, FileSelectionResult } from './bid';
-import type { ClientConfig, ConfigSaveResult, ImageModelTestResult, ModelListResult, UpdateChannel } from './config';
+import type { ClientConfig, ConfigSaveResult, ImageModelTestResult, ModelListResult } from './config';
 import type { KnowledgeAnalysisSnapshot, KnowledgeBaseEvent, KnowledgeBaseIndex, KnowledgeBaseIndexMutationResult, KnowledgeBaseMigrationResult, KnowledgeBaseMigrationStatus, KnowledgeBaseMutationResult, KnowledgeBaseRetryDocumentResult, KnowledgeBaseStartMatchingResult, KnowledgeBaseUploadResult, KnowledgeDocument, KnowledgeFolder, KnowledgeItem } from '../../features/knowledge-base/types';
-import type { RejectionCheckWorkspaceState, RejectionDocumentRole } from '../../features/rejection-check/types';
+import type { ProcurementActionResult, ProcurementAgentState } from '../../features/procurement-agent/types';
 import type { BidAnalysisMode, BidAnalysisTaskState, ContentGenerationOptions, ContentGenerationPlanState, ContentGenerationRuntimeState, ContentGenerationSectionState, DetectedBidSection, GlobalFactGroupState, SaveOutlineRequest, TechnicalPlanState, TechnicalPlanStep, TechnicalPlanWorkflowKind } from '../../features/technical-plan/types';
 import type { OutlineData, OutlineMode } from './outline';
 
-export interface TaskEvent<TState = unknown, TRejectionCheckState = unknown, TDuplicateCheckState = unknown> {
+export interface TaskEvent<TState = unknown> {
   task: unknown;
   technicalPlan?: TState;
   technicalPlanPatch?: Partial<TechnicalPlanState>;
@@ -15,8 +14,6 @@ export interface TaskEvent<TState = unknown, TRejectionCheckState = unknown, TDu
   contentSection?: ContentGenerationSectionState;
   contentPlan?: { nodeId: string; value: ContentGenerationPlanState | null };
   contentRuntime?: ContentGenerationRuntimeState;
-  rejectionCheck?: TRejectionCheckState;
-  duplicateCheck?: TDuplicateCheckState;
 }
 
 export interface WordExportProgressEvent {
@@ -33,26 +30,6 @@ export interface WordExportResult {
   path?: string;
   message?: string;
   warnings?: string[];
-}
-
-export interface LatestReleaseInfo {
-  version: string;
-  name: string;
-  body: string;
-  published_at: string;
-  html_url: string;
-  download_url?: string;
-  channel?: UpdateChannel;
-}
-
-export interface UpdateCheckResult {
-  enabled: boolean;
-  updateAvailable: boolean;
-  version?: string;
-  downloaded?: boolean;
-  failed?: boolean;
-  message?: string;
-  channel?: UpdateChannel;
 }
 
 export interface GpuHardwareAccelerationStatus {
@@ -84,15 +61,7 @@ export interface YibiaoBridge {
   saveGpuHardwareAccelerationPreference: (enabled: boolean) => Promise<ConfigSaveResult & { enabled: boolean; configured: boolean; restartRequired: boolean }>;
   startGpuHardwareAccelerationTrial: () => Promise<{ success: boolean }>;
   relaunchWithGpuHardwareAccelerationDisabled: () => Promise<{ success: boolean }>;
-  getLatestVersion: () => Promise<LatestReleaseInfo>;
-  getUpdateDownloadUrl: () => Promise<string>;
   openExternal: (url: string) => Promise<{ success: boolean; message?: string }>;
-  checkUpdate: () => Promise<UpdateCheckResult>;
-  startUpdate: () => Promise<UpdateCheckResult>;
-  quitAndInstall: () => Promise<void>;
-  onUpdateProgress: (callback: (event: { percent: number }) => void) => () => void;
-  onUpdateDownloaded: (callback: (event: { version: string }) => void) => () => void;
-  onUpdateError: (callback: (event: { message: string }) => void) => () => void;
   database: {
     getStatus: () => Promise<WorkspaceDatabaseStatus>;
     onStatus: (callback: (status: WorkspaceDatabaseStatus) => void) => () => void;
@@ -108,8 +77,18 @@ export interface YibiaoBridge {
     requestJson: <TResult = unknown>(request: JsonCompletionRequest) => Promise<TResult>;
     testImageModel: (config: ClientConfig) => Promise<ImageModelTestResult>;
   };
-  file: {
-    selectDuplicateCheckFiles: (options?: { multiple?: boolean }) => Promise<FileSelectionResult>;
+  procurementAgent: {
+    loadState: () => Promise<ProcurementAgentState>;
+    saveTask: (payload: Partial<ProcurementAgentState['task']>) => Promise<ProcurementAgentState>;
+    importTemplateDocument: (payload?: { filePath?: string }) => Promise<ProcurementActionResult>;
+    importDemandDocument: () => Promise<ProcurementActionResult>;
+    extractFields: () => Promise<ProcurementActionResult>;
+    updateField: (payload: { id: string; confirmedValue: string; status?: string }) => Promise<ProcurementAgentState>;
+    acceptHighConfidence: (threshold?: number) => Promise<ProcurementAgentState>;
+    readTemplatePdf: (payload?: { templateId?: string }) => Promise<ArrayBuffer | Uint8Array | number[]>;
+    selectTemplate: (payload: { templateId: string }) => Promise<ProcurementAgentState>;
+    deleteTemplate: (payload: { templateId: string }) => Promise<ProcurementActionResult>;
+    clear: () => Promise<ProcurementAgentState>;
   };
   knowledgeBase: {
     getMigrationStatus: () => Promise<KnowledgeBaseMigrationStatus>;
@@ -163,33 +142,14 @@ export interface YibiaoBridge {
     saveChapterContent: (payload: { nodeId: string; content: string }) => Promise<TechnicalPlanState>;
     clear: () => Promise<{ success: boolean; message?: string; state: TechnicalPlanState }>;
   };
-  duplicateCheck: {
-    loadState: () => Promise<DuplicateCheckWorkspaceState>;
-    saveFiles: (payload: Pick<DuplicateCheckWorkspaceState, 'tenderFile' | 'bidFiles'> & Partial<Pick<DuplicateCheckWorkspaceState, 'step' | 'activeAnalysisTab'>>) => Promise<DuplicateCheckWorkspaceState>;
-    saveUiState: (payload: Partial<Pick<DuplicateCheckWorkspaceState, 'step' | 'activeAnalysisTab'>>) => Promise<DuplicateCheckWorkspaceState>;
-    updateState: (partial: Partial<DuplicateCheckWorkspaceState>) => Promise<DuplicateCheckWorkspaceState>;
-    clear: () => Promise<{ success: boolean; message?: string; state: DuplicateCheckWorkspaceState }>;
-  };
-  rejectionCheck: {
-    loadState: () => Promise<RejectionCheckWorkspaceState>;
-    importDocument: (role: RejectionDocumentRole) => Promise<{ success: boolean; message?: string; state: RejectionCheckWorkspaceState }>;
-    importTenderFromTechnicalPlan: () => Promise<{ success: boolean; message?: string; state: RejectionCheckWorkspaceState }>;
-    removeDocument: (role: RejectionDocumentRole, documentId?: string) => Promise<RejectionCheckWorkspaceState>;
-    saveUiState: (payload: Partial<Pick<RejectionCheckWorkspaceState, 'step' | 'activeDocumentTab' | 'activeResultTab' | 'activeCheckResultTab' | 'customCheckItems' | 'checkOptions'>>) => Promise<RejectionCheckWorkspaceState>;
-    updateState: (partial: Partial<RejectionCheckWorkspaceState>) => Promise<RejectionCheckWorkspaceState>;
-    clear: () => Promise<{ success: boolean; message?: string; state: RejectionCheckWorkspaceState }>;
-  };
   tasks: {
     startBidAnalysis: (payload: unknown) => Promise<unknown>;
     startOutlineGeneration: (payload: unknown) => Promise<unknown>;
     startGlobalFactsGeneration: (payload: unknown) => Promise<unknown>;
     startContentGeneration: (payload: unknown) => Promise<unknown>;
     pauseContentGeneration: () => Promise<unknown>;
-    startRejectionItemsExtraction: (payload: unknown) => Promise<unknown>;
-    startRejectionCheck: (payload: unknown) => Promise<unknown>;
-    startDuplicateAnalysis: (payload: unknown) => Promise<unknown>;
     getActiveTasks: () => Promise<unknown[]>;
-    onTaskEvent: <TState = unknown, TRejectionCheckState = unknown, TDuplicateCheckState = unknown>(callback: (event: TaskEvent<TState, TRejectionCheckState, TDuplicateCheckState>) => void) => () => void;
+    onTaskEvent: <TState = unknown>(callback: (event: TaskEvent<TState>) => void) => () => void;
   };
   export: {
     exportWord: (payload: unknown) => Promise<WordExportResult>;

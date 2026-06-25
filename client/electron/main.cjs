@@ -3,8 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { registerIpcHandlers } = require('./ipc/index.cjs');
-const { setupAutoUpdate, checkAndDownloadUpdate, triggerUpdateDownload, quitAndInstall, getLatestVersion, getUpdateDownloadUrl } = require('./services/updateService.cjs');
-const { getConfigFilePath, getGeneratedImagesDir, getGpuStartupProbePath, getImportedImagesDir } = require('./utils/paths.cjs');
+const { getConfigFilePath, getGeneratedImagesDir, getGpuStartupProbePath, getImportedImagesDir, getWorkspaceDir } = require('./utils/paths.cjs');
 
 const rendererUrl = process.env.ELECTRON_RENDERER_URL;
 const iconPath = path.join(__dirname, '../assets/icon.ico');
@@ -231,6 +230,7 @@ function registerAssetProtocol() {
       const assetRoots = {
         'generated-images': getGeneratedImagesDir(app),
         'imported-images': getImportedImagesDir(app),
+        'procurement-agent': path.join(getWorkspaceDir(app), 'procurement-agent'),
       };
       const rootDir = assetRoots[url.hostname];
       if (!rootDir) {
@@ -348,16 +348,10 @@ app.whenReady().then(() => {
   registerIpcHandlers({
     app,
     mainWindow,
-    checkAndDownloadUpdate,
-    triggerUpdateDownload,
-    quitAndInstall,
-    getLatestVersion,
-    getUpdateDownloadUrl,
     gpuStartupState,
     gpuTrialArg: GPU_HARDWARE_ACCELERATION_TRIAL_ARG,
     forceDisableGpuArgs: FORCE_DISABLE_GPU_ARGS,
   });
-  setupAutoUpdate({ app, mainWindow });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

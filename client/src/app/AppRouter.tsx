@@ -1,17 +1,11 @@
 import type { SectionId } from '../shared/types/navigation';
 import { getAppMenuItemById } from './menuConfig';
-import BidOpportunityPage from '../features/bid-opportunity/pages/BidOpportunityPage';
-import BusinessBidPage from '../features/business-bid/pages/BusinessBidPage';
-import DeveloperDemoPage, { isDeveloperDemoSection } from '../features/developer/pages/DeveloperDemoPage';
-import DeveloperTestPage from '../features/developer/pages/DeveloperTestPage';
 import ExportFormatPage from '../features/export-format/pages/ExportFormatPage';
-import DuplicateCheckPage from '../features/duplicate-check/pages/DuplicateCheckPage';
 import KnowledgeBasePage from '../features/knowledge-base/pages/KnowledgeBasePage';
-import RejectionCheckPage from '../features/rejection-check/pages/RejectionCheckPage';
-import ResourcesPage from '../features/resources/pages/ResourcesPage';
+import ProcurementTemplateDetailPage from '../features/procurement-agent/pages/ProcurementTemplateDetailPage';
+import ProcurementTemplateLibraryPage from '../features/procurement-agent/pages/ProcurementTemplateLibraryPage';
 import SettingsPage from '../features/settings/pages/SettingsPage';
 import TechnicalPlanHome from '../features/technical-plan/pages/TechnicalPlanHome';
-import SecondaryMenuPage from '../shared/ui/SecondaryMenuPage';
 
 interface AppRouterProps {
   activeSection: SectionId;
@@ -23,38 +17,21 @@ interface AppRouterProps {
 
 function AppRouter({ activeSection, developerMode, onDeveloperModeChange, onSectionChange, registerLeaveGuard }: AppRouterProps) {
   const activeMenuItem = getAppMenuItemById(activeSection, developerMode);
+  const routedSection = activeMenuItem?.children?.find((item) => !item.hidden)?.id ?? activeSection;
 
-  if (activeMenuItem?.children?.length) {
-    return <SecondaryMenuPage menuItem={activeMenuItem} onNavigate={onSectionChange} />;
-  }
-
-  if (isDeveloperDemoSection(activeSection)) {
-    return <DeveloperDemoPage sectionId={activeSection} />;
-  }
-
-  switch (activeSection) {
+  switch (routedSection) {
+    case 'procurement-template-library':
+      return <ProcurementTemplateLibraryPage onNavigate={onSectionChange} />;
+    case 'procurement-template-detail':
+      return <ProcurementTemplateDetailPage onNavigate={onSectionChange} />;
     case 'technical-plan':
       return <TechnicalPlanHome workflowKind="technical-plan" registerLeaveGuard={registerLeaveGuard} onSectionChange={onSectionChange} />;
     case 'existing-plan-expansion':
       return <TechnicalPlanHome workflowKind="existing-plan-expansion" registerLeaveGuard={registerLeaveGuard} onSectionChange={onSectionChange} />;
-    case 'business-bid':
-      return <BusinessBidPage />;
     case 'document-knowledge-base':
       return <KnowledgeBasePage />;
-    case 'resources':
-      return <ResourcesPage />;
-    case 'duplicate-check':
-      return <DuplicateCheckPage />;
-    case 'rejection-check':
-      return <RejectionCheckPage />;
     case 'export-format':
       return <ExportFormatPage />;
-    case 'bid-opportunity':
-      return <BidOpportunityPage />;
-    case 'developer-test':
-      return null;
-    case 'developer-json-test':
-      return <DeveloperTestPage />;
     case 'settings':
       return <SettingsPage onDeveloperModeChange={onDeveloperModeChange} />;
     default:

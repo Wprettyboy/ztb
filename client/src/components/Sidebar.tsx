@@ -3,7 +3,7 @@ import { useState, type ComponentType, type ReactElement, type SVGProps } from '
 import { getAppMenuItems, getParentMenuItemBySection } from '../app/menuConfig';
 import type { AppMenuItem, SectionId } from '../shared/types/navigation';
 import { useToast } from '../shared/ui';
-import logoUrl from '../../assets/icon_256.png';
+import logoUrl from '../assets/bid-logo.svg';
 
 interface SidebarProps {
   activeSection: SectionId;
@@ -12,25 +12,15 @@ interface SidebarProps {
 }
 
 const navigationIcons: Record<SectionId, ComponentType<SVGProps<SVGSVGElement>>> = {
+  'procurement-agent': ProcurementIcon,
+  'procurement-template-library': ProcurementIcon,
+  'procurement-template-detail': DocumentIcon,
   'bid-generation': BidGenerationIcon,
   'technical-plan': DocumentIcon,
   'existing-plan-expansion': DocumentIcon,
-  'business-bid': BriefcaseIcon,
   'knowledge-base': ArchiveIcon,
   'document-knowledge-base': ArchiveIcon,
-  'image-knowledge-base': ArchiveIcon,
-  resources: ResourcesIcon,
-  'bid-check': BidCheckIcon,
-  'duplicate-check': CompareIcon,
-  'rejection-check': ShieldIcon,
-  'ai-evaluation': BidCheckIcon,
   'export-format': DocumentIcon,
-  'bid-opportunity': RadarIcon,
-  'developer-test': FlaskIcon,
-  'developer-json-test': FlaskIcon,
-  'developer-prompt-lab': FlaskIcon,
-  'developer-parser-sandbox': FlaskIcon,
-  'developer-export-preview': FlaskIcon,
   settings: GearIcon,
 };
 
@@ -42,7 +32,8 @@ function Sidebar({ activeSection, developerMode, onSectionChange }: SidebarProps
 
   const handleMenuItemClick = (item: AppMenuItem) => {
     if (!item.notice) {
-      onSectionChange(item.id);
+      const firstVisibleChild = item.children?.find((child) => !child.hidden);
+      onSectionChange(firstVisibleChild?.id ?? item.id);
       return;
     }
 
@@ -85,6 +76,7 @@ function Sidebar({ activeSection, developerMode, onSectionChange }: SidebarProps
         {menuItems.map((item) => {
           const Icon = navigationIcons[item.id];
           const isActive = item.id === activeSection || activeParent?.id === item.id;
+          const visibleChildren = item.children?.filter((child) => !child.hidden) ?? [];
           const button = (
             <button
               key={item.id}
@@ -104,7 +96,40 @@ function Sidebar({ activeSection, developerMode, onSectionChange }: SidebarProps
             </button>
           );
 
-          return collapsed ? wrapTooltip(item.label, button) : button;
+          if (collapsed) {
+            return wrapTooltip(item.label, button);
+          }
+
+          return (
+            <div key={item.id} className={`nav-group ${isActive ? 'is-open' : ''}`}>
+              {button}
+              {visibleChildren.length > 0 && isActive ? (
+                <div className="nav-sub-list" aria-label={`${item.label}二级菜单`}>
+                  {visibleChildren.map((child) => {
+                    const ChildIcon = navigationIcons[child.id] ?? DocumentIcon;
+                    const childActive = child.id === activeSection;
+                    return (
+                      <button
+                        key={child.id}
+                        type="button"
+                        className={`nav-sub-item ${childActive ? 'is-active' : ''}`}
+                        onClick={() => onSectionChange(child.id)}
+                        aria-current={childActive ? 'page' : undefined}
+                      >
+                        <span className="nav-sub-icon" aria-hidden="true">
+                          <ChildIcon />
+                        </span>
+                        <span className="nav-sub-copy">
+                          <strong>{child.label}</strong>
+                          <small>{child.description}</small>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          );
         })}
       </nav>
 
@@ -170,6 +195,19 @@ function BidGenerationIcon(props: SVGProps<SVGSVGElement>) {
       <path d="M8.8 13.2h6.4" />
       <path d="M8.8 16.3h4.5" />
       <path d="M4.5 7.2v13h12" />
+    </svg>
+  );
+}
+
+function ProcurementIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" {...props}>
+      <path d="M6.2 4.2h8.4l3.2 3.2v12.4H6.2z" />
+      <path d="M14.4 4.5v3.2h3.1" />
+      <path d="M8.7 10.3h6.6" />
+      <path d="M8.7 13.4h4.4" />
+      <path d="M8.7 16.5h3.1" />
+      <path d="m15.1 16.2 1.2 1.2 2.3-2.8" />
     </svg>
   );
 }

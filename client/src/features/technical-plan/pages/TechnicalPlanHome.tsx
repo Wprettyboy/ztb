@@ -82,9 +82,7 @@ function collectLeafItems(items: OutlineItem[]): OutlineItem[] {
 }
 
 function countMermaidDiagrams(content: string) {
-  const mermaidBlocks = (String(content || '').match(/```mermaid[\s\S]*?```/gi) || []).length;
-  const mermaidInkImages = (String(content || '').match(/https:\/\/mermaid\.ink\/img\//gi) || []).length;
-  return mermaidBlocks + mermaidInkImages;
+  return (String(content || '').match(/```mermaid[\s\S]*?```/gi) || []).length;
 }
 
 function countOutlineMermaidDiagrams(items: OutlineItem[]) {
@@ -608,7 +606,7 @@ function TechnicalPlanHome({ workflowKind, registerLeaveGuard, onSectionChange }
         running: true,
         progress: 2,
         message: mermaidCount
-          ? `检测到 ${mermaidCount} 张 Mermaid 图，导出时会转换为 Word 图片，可能需要稍等。`
+          ? `检测到 ${mermaidCount} 个 Mermaid 代码块，导出时将按代码保留。`
           : '正在准备导出 Word。',
         warnings: [],
         mermaidCount,
@@ -952,7 +950,7 @@ function TechnicalPlanHome({ workflowKind, registerLeaveGuard, onSectionChange }
               <Dialog.Title>{exportProgress.running ? '正在导出 Word' : exportProgress.error ? '导出失败' : '导出完成'}</Dialog.Title>
               <Dialog.Description>
                 {exportProgress.mermaidCount > 0
-                  ? `本次包含 ${exportProgress.mermaidCount} 张 Mermaid 图，导出时会通过 mermaid.ink 转换成 Word 图片，速度受网络影响。`
+                  ? `本次包含 ${exportProgress.mermaidCount} 个 Mermaid 代码块，精简版会按代码保留。`
                   : '正在将正文、表格和图片写入 Word 文档。'}
               </Dialog.Description>
             </div>

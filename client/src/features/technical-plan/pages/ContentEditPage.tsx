@@ -1,7 +1,7 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Popover from '@radix-ui/react-popover';
 import * as Switch from '@radix-ui/react-switch';
-import { Children, isValidElement, memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Children, isValidElement, memo, useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import type { Components } from 'react-markdown';
 import { trackConfigUsage } from '../../../shared/analytics/analytics';
 import { DetailHelpLink, MarkdownEditor, MarkdownRenderer, useToast } from '../../../shared/ui';
@@ -71,7 +71,7 @@ const tableRequirementOptions: Array<{ value: ContentTableRequirement; label: st
 const defaultContentGenerationOptions: ContentGenerationOptions = {
   useAiImages: false,
   maxAiImages: 6,
-  useMermaidImages: true,
+  useMermaidImages: false,
   tableRequirement: 'heavy',
   minimumWords: 0,
   contentConcurrency: 5,
@@ -102,7 +102,7 @@ function normalizeGenerationOptions(options: ContentGenerationOptions | DraftCon
   return {
     useAiImages: Boolean(options?.useAiImages ?? fallback.useAiImages) && imageModelAvailable,
     maxAiImages: Math.max(0, Math.min(Number.isFinite(requestedMaxAiImages) ? Math.round(requestedMaxAiImages) : fallback.maxAiImages, maxAiImagesLimit)),
-    useMermaidImages: Boolean(options?.useMermaidImages ?? fallback.useMermaidImages),
+    useMermaidImages: false,
     tableRequirement: isContentTableRequirement(tableRequirement) ? tableRequirement : fallback.tableRequirement,
     minimumWords: Math.max(0, Number.isFinite(requestedMinimumWords) ? Math.round(requestedMinimumWords) : fallback.minimumWords),
     contentConcurrency: Math.max(1, Number.isFinite(requestedContentConcurrency) ? Math.round(requestedContentConcurrency) : fallback.contentConcurrency),
@@ -218,75 +218,6 @@ function buildOutlineMeta(items: OutlineItem[], sections: ContentGenerationSecti
   return meta;
 }
 
-function MermaidBlock({ code }: { code: string }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
-  const [errorMessage, setErrorMessage] = useState('');
-
-  useEffect(() => {
-    let cancelled = false;
-    const container = containerRef.current;
-    const trimmedCode = String(code || '').trim();
-
-    if (!trimmedCode) {
-      setStatus('error');
-      setErrorMessage('Mermaid 图代码为空');
-      if (container) {
-        container.innerHTML = '';
-      }
-      return undefined;
-    }
-
-    setStatus('loading');
-    setErrorMessage('');
-    if (container) {
-      container.innerHTML = '';
-    }
-
-    import('mermaid')
-      .then((module) => {
-        const mermaid = module.default;
-        mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'strict' });
-        return mermaid.render(`mermaid-${Date.now()}-${Math.random().toString(36).slice(2)}`, trimmedCode);
-      })
-      .then(({ svg }) => {
-        if (cancelled || !containerRef.current) {
-          return;
-        }
-        containerRef.current.innerHTML = svg;
-        setStatus('success');
-      })
-      .catch((error) => {
-        if (cancelled) {
-          return;
-        }
-        setStatus('error');
-        setErrorMessage(error instanceof Error ? error.message : 'Mermaid 图渲染失败');
-      });
-
-    return () => {
-      cancelled = true;
-      if (container) {
-        container.innerHTML = '';
-      }
-    };
-  }, [code]);
-
-  return (
-    <figure className={`mermaid-preview-card is-${status}`}>
-      {status === 'loading' && <span>正在渲染 Mermaid 图...</span>}
-      {status === 'error' && (
-        <div className="mermaid-preview-error">
-          <strong>Mermaid 图渲染失败</strong>
-          <small>{errorMessage}</small>
-          <pre>{code}</pre>
-        </div>
-      )}
-      <div ref={containerRef} className="mermaid-preview-canvas" aria-hidden={status !== 'success'} />
-    </figure>
-  );
-}
-
 function reactNodeText(children: ReactNode): string {
   return Children.toArray(children).map((child) => {
     if (typeof child === 'string' || typeof child === 'number') {
@@ -307,18 +238,6 @@ const MarkdownContent = memo(function MarkdownContent({ content, onPreviewImage 
         ? [className, 'markdown-figure-caption'].filter(Boolean).join(' ')
         : className;
       return <p {...props} className={nextClassName}>{children}</p>;
-    },
-    pre({ children, ...props }) {
-      const child = Children.count(children) === 1 ? Children.only(children) : null;
-      if (isValidElement(child)) {
-        const childProps = child.props as { className?: string; children?: ReactNode };
-        const className = childProps.className || '';
-        if (/\blanguage-mermaid\b/i.test(className)) {
-          return <MermaidBlock code={String(childProps.children || '').replace(/\n$/, '')} />;
-        }
-      }
-
-      return <pre {...props}>{children}</pre>;
     },
     img({ node: _node, src, alt, ...props }) {
       const imageSrc = String(src || '');
@@ -1233,21 +1152,18 @@ function ContentEditPage({
               <label className="content-generation-config-row">
                 <span>
                   <strong>生成 Mermaid 图片</strong>
-                  <small>适合简单流程、层级、时间线或关系图；预览在前端渲染，与 AI 生图二选一。</small>
+                  <small>精简版已禁用第三方转图服务；后续可替换为本地渲染实现。</small>
                 </span>
                 <Switch.Root
                   className="content-generation-switch"
-                  checked={draftGenerationOptions.useMermaidImages}
-                  disabled={generationStrategyLocked}
-                  onCheckedChange={(checked) => setDraftGenerationOptions((prev) => ({ ...prev, useMermaidImages: checked }))}
+                  checked={false}
+                  disabled
+                  onCheckedChange={() => setDraftGenerationOptions((prev) => ({ ...prev, useMermaidImages: false }))}
                   aria-label="是否生成 Mermaid 图片"
                 >
                   <Switch.Thumb className="content-generation-switch-thumb" />
                 </Switch.Root>
               </label>
-              {draftGenerationOptions.useMermaidImages && (
-                <p className="content-generation-config-note">当前 Mermaid 转图片使用的是 https://mermaid.ink/ 的免费接口，可能不稳定，导出 Word 后请仔细核对。</p>
-              )}
             </div>
             <div className="content-regenerate-actions">
               <Dialog.Close className="secondary-action" type="button">取消</Dialog.Close>

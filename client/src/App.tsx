@@ -1,9 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import AppRouter from './app/AppRouter';
 import GpuHardwareAccelerationPrompt from './app/GpuHardwareAccelerationPrompt';
-import UpdateNotifier from './app/UpdateNotifier';
 import AppShell from './components/AppShell';
-import { trackAppOpen, trackConfigUsage, trackPageView } from './shared/analytics/analytics';
 import type { SectionId } from './shared/types/navigation';
 
 function isDeveloperSection(section: SectionId) {
@@ -11,28 +9,21 @@ function isDeveloperSection(section: SectionId) {
 }
 
 function App() {
-  const [activeSection, setActiveSection] = useState<SectionId>('bid-generation');
+  const [activeSection, setActiveSection] = useState<SectionId>('procurement-template-library');
   const [developerMode, setDeveloperMode] = useState(false);
   const leaveGuardRef = useRef<((nextSection?: string) => Promise<boolean>) | null>(null);
 
   useEffect(() => {
-    trackAppOpen();
-
     void window.yibiao?.config.load()
       .then((config) => {
         setDeveloperMode(Boolean(config?.developer_mode));
-        trackConfigUsage({}, config);
       })
       .catch((error) => console.warn('读取开发者模式失败', error));
   }, []);
 
   useEffect(() => {
-    trackPageView(activeSection);
-  }, [activeSection]);
-
-  useEffect(() => {
     if (!developerMode && isDeveloperSection(activeSection)) {
-      setActiveSection('bid-generation');
+      setActiveSection('procurement-agent');
     }
   }, [activeSection, developerMode]);
 
@@ -49,7 +40,6 @@ function App() {
   return (
     <>
       <GpuHardwareAccelerationPrompt />
-      <UpdateNotifier />
       <AppShell
         activeSection={activeSection}
         developerMode={developerMode}

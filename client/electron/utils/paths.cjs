@@ -32,26 +32,6 @@ function getTechnicalPlanOriginalPlanMarkdownPath(app) {
   return path.join(getTechnicalPlanDir(app), 'original-plan.md');
 }
 
-function getDuplicateCheckDir(app) {
-  return path.join(getWorkspaceDir(app), 'duplicate-check');
-}
-
-function getDuplicateCheckContentDir(app) {
-  return path.join(getDuplicateCheckDir(app), 'contents');
-}
-
-function getRejectionCheckDir(app) {
-  return path.join(getWorkspaceDir(app), 'rejection-check');
-}
-
-function getRejectionCheckDocumentMarkdownPath(app, role, documentId) {
-  if (role === 'bid') {
-    const safeDocumentId = String(documentId || 'bid').replace(/[^a-zA-Z0-9_-]/g, '_');
-    return path.join(getRejectionCheckDir(app), 'bids', `${safeDocumentId}.md`);
-  }
-  return path.join(getRejectionCheckDir(app), 'tender.md');
-}
-
 function getGeneratedImagesDir(app) {
   return path.join(getWorkspaceDir(app), 'generated-images');
 }
@@ -79,15 +59,11 @@ function getTechnicalPlanLogsDir(app) {
 module.exports = {
   getAiLogsDir,
   getDeveloperLogsDir,
-  getDuplicateCheckContentDir,
-  getDuplicateCheckDir,
   getConfigFilePath,
   getGpuStartupProbePath,
   getGeneratedImagesDir,
   getImportedImagesDir,
   getKnowledgeBaseDir,
-  getRejectionCheckDir,
-  getRejectionCheckDocumentMarkdownPath,
   getTechnicalPlanDir,
   getTechnicalPlanLogsDir,
   getTechnicalPlanOriginalPlanMarkdownPath,

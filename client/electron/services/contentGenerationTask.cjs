@@ -1,12 +1,10 @@
 const crypto = require('node:crypto');
-const zlib = require('node:zlib');
 const { createNoopDeveloperLogger } = require('../utils/developerLog.cjs');
 const { countReadableWords } = require('../utils/wordCount.cjs');
 
 const IMAGE_STYLES = new Set(['engineering_diagram', 'realistic_photo']);
 const DEFAULT_CONTENT_CONCURRENCY = 5;
 const MERMAID_REPAIR_ATTEMPTS = 3;
-const MERMAID_RENDER_TIMEOUT_MS = 15000;
 const AI_IMAGE_CONCURRENCY = 2;
 const MERMAID_IMAGE_CONCURRENCY = 5;
 const INTERRUPTED_SECTION_ERROR = '上次生成被中断，请继续生成。';
@@ -138,18 +136,6 @@ function normalizeMermaidCode(value) {
     .trim();
 }
 
-function encodeMermaidForInk(code) {
-  const state = JSON.stringify({
-    code: String(code || ''),
-    mermaid: { theme: 'default' },
-  });
-  return `pako:${zlib.deflateSync(Buffer.from(state, 'utf-8')).toString('base64url')}`;
-}
-
-function mermaidInkUrl(code) {
-  return `https://mermaid.ink/img/${encodeMermaidForInk(code)}?type=png&bgColor=!white`;
-}
-
 function compactError(value, maxLength = 220) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
@@ -174,39 +160,10 @@ function assertMermaidPreviewCompatible(code) {
   }
 }
 
-async function readResponseSnippet(response) {
-  try {
-    const text = await response.text();
-    return compactError(text, 240);
-  } catch (_error) {
-    return '';
-  }
-}
-
 async function validateMermaidRender(code) {
   const normalized = normalizeMermaidCode(code);
   assertMermaidPreviewCompatible(normalized);
-  if (typeof fetch !== 'function') {
-    throw new Error('当前运行环境不支持 Mermaid 渲染校验');
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), MERMAID_RENDER_TIMEOUT_MS);
-  try {
-    const response = await fetch(mermaidInkUrl(normalized), { signal: controller.signal });
-    const contentType = response.headers?.get?.('content-type') || '';
-    if (!response.ok || !/image\//i.test(contentType)) {
-      const detail = await readResponseSnippet(response);
-      throw new Error(`Mermaid 渲染失败：HTTP ${response.status || 'unknown'}${detail ? `，${detail}` : ''}`);
-    }
-  } catch (error) {
-    if (error?.name === 'AbortError') {
-      throw new Error('Mermaid 渲染校验超时');
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
+  return true;
 }
 
 function normalizePriority(value) {
@@ -688,7 +645,7 @@ function buildChapterContentMessages({ chapter, parentChapters, siblingChapters,
 5. 注意避免与同级章节内容重复，保持内容的独特性和互补性。
 6. 可以使用 Markdown 段落、列表和表格；表格必须服务于内容表达，不要为了形式硬插。
 7. 正文只生成文字、列表、表格等内容，配图由系统另行处理。
-8. 严禁输出 Mermaid、PlantUML、Graphviz、flowchart、graph、sequenceDiagram 等图表代码块、mermaid.ink 链接或图片 Markdown；配图由系统另行处理。
+8. 严禁输出 Mermaid、PlantUML、Graphviz、flowchart、graph、sequenceDiagram 等图表代码块、外部图表链接或图片 Markdown；配图由系统另行处理。
 9. 表格单元格内如有多项内容，优先使用编号、顿号、分号或短句，不要使用 HTML <br> 标签。
 10. 严禁使用 Markdown 标题语法（#、##、###、####、#####、######），也不要生成与当前章节同级或下级的伪目录标题。
 11. 如需在正文中分层表达，只能使用普通段落、列表、表格或加粗引导语，例如 **实施要点：**。
@@ -2714,7 +2671,7 @@ async function runContentGenerationTask({ aiService, workspaceStore, knowledgeBa
     ? aiService.getImageModelAvailability()
     : { available: false, message: '生图模型不可用' };
   const aiImagesEnabled = Boolean(generationOptions.useAiImages ?? generationOptions.use_ai_images ?? imageAvailability.available) && imageAvailability.available;
-  const mermaidImagesEnabled = Boolean(generationOptions.useMermaidImages ?? generationOptions.use_mermaid_images ?? Boolean(targetItemId));
+  const mermaidImagesEnabled = false;
   const enableConsistencyAudit = Boolean(generationOptions.enableConsistencyAudit ?? generationOptions.enable_consistency_audit ?? true);
   const enableOriginalPlanCoverageAudit = isExpansionWorkflow && Boolean(generationOptions.enableOriginalPlanCoverageAudit ?? generationOptions.enable_original_plan_coverage_audit ?? false);
   const requestedMaxImages = Number(generationOptions.maxAiImages ?? generationOptions.max_ai_images);

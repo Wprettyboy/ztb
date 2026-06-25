@@ -1,4 +1,4 @@
-import type { FileParserConfig, ImageModelConfig, ImageModelProfiles, TextModelConfig, TextModelProfiles, TextModelProvider, UpdateChannel } from '../../shared/types';
+import type { FileParserConfig, ImageModelConfig, ImageModelProfiles, TextModelConfig, TextModelProfiles, TextModelProvider } from '../../shared/types';
 
 export interface SettingsPageState {
   textModel: Omit<TextModelConfig, 'context_length_limit'> & {
@@ -11,7 +11,6 @@ export interface SettingsPageState {
   fileParser: FileParserConfig;
   general: {
     developer_mode: boolean;
-    update_channel: UpdateChannel;
     gpu_hardware_acceleration_enabled: boolean;
     gpu_hardware_acceleration_configured: boolean;
   };

@@ -1,13 +1,11 @@
 import { useEffect, useState } from 'react';
 import { trackConfigUsage } from '../../../shared/analytics/analytics';
 import { FloatingToolbar, InputWithAction, useToast } from '../../../shared/ui';
-import { showUpdateReadyToast } from '../../../shared/updateToast';
 import type { FloatingToolbarGroup } from '../../../shared/ui';
-import type { AiRequestMode, ClientConfig, FileParserProvider, ImageModelConfig, ImageModelProfiles, ImageModelProvider, ImageModelStatus, TextModelConfig, TextModelProfiles, TextModelProvider, UpdateChannel } from '../../../shared/types';
+import type { AiRequestMode, ClientConfig, FileParserProvider, ImageModelConfig, ImageModelProfiles, ImageModelProvider, ImageModelStatus, TextModelConfig, TextModelProfiles, TextModelProvider } from '../../../shared/types';
 import type { SettingsPageState } from '../types';
 
 type SettingsTab = 'general' | 'text-model' | 'image-model' | 'file-parser' | 'about';
-type UpdateStatus = 'idle' | 'checking' | 'downloading' | 'downloaded' | 'error' | 'disabled';
 
 const settingsTabs: Array<{ id: SettingsTab; label: string }> = [
   { id: 'general', label: '通用' },
@@ -17,21 +15,12 @@ const settingsTabs: Array<{ id: SettingsTab; label: string }> = [
   { id: 'about', label: '关于' },
 ];
 
-const updateChannelOptions: Array<{ value: UpdateChannel; label: string; description: string }> = [
-  { value: 'github', label: 'GitHub', description: '使用 GitHub Release 检查和下载更新' },
-  { value: 'cloudflare', label: 'Cloudflare', description: '使用 Cloudflare R2 镜像检查和下载更新' },
-];
-
-function normalizeUpdateChannel(value?: string): UpdateChannel {
-  return value === 'cloudflare' ? 'cloudflare' : 'github';
-}
-
 const textModelProviders: Array<{ value: TextModelProvider; label: string }> = [
-  { value: 'jinlong', label: '金龙中转站【推荐】' },
-  { value: 'volcengine', label: '火山方舟' },
+  { value: 'custom', label: '自定义 OpenAI 兼容接口' },
+  { value: 'volcengine', label: '火山方舟（自填地址）' },
   { value: 'deepseek', label: 'DeepSeek' },
   { value: 'longcat', label: '龙猫' },
-  { value: 'custom', label: '自定义' },
+  { value: 'jinlong', label: '其他 OpenAI 兼容接口' },
 ];
 
 const aiRequestModeOptions: Array<{ value: AiRequestMode; label: string }> = [
@@ -40,21 +29,23 @@ const aiRequestModeOptions: Array<{ value: AiRequestMode; label: string }> = [
 ];
 
 const DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT = 400000;
+const localGemmaTextModelDefault: TextModelConfig = {
+  api_key: 'local-llama',
+  base_url: 'http://127.0.0.1:8088/v1',
+  model_name: 'gemma-4-31B_q4_0-it.gguf',
+  context_length_limit: 8192,
+  request_mode: 'stream',
+};
 
 const textProviderDefaults: TextModelProfiles = {
-  jinlong: { api_key: '', base_url: 'https://jlaudeapi.com/v1', model_name: 'gpt-3.5-turbo', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, request_mode: 'stream' },
-  volcengine: { api_key: '', base_url: 'https://ark.cn-beijing.volces.com/api/v3', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, request_mode: 'stream' },
-  deepseek: { api_key: '', base_url: 'https://api.deepseek.com', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, request_mode: 'stream' },
-  longcat: { api_key: '', base_url: 'https://api.longcat.chat/openai/v1', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, request_mode: 'stream' },
-  custom: { api_key: '', base_url: '', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, request_mode: 'stream' },
+  jinlong: { api_key: '', base_url: '', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, request_mode: 'stream' },
+  volcengine: { api_key: '', base_url: '', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, request_mode: 'stream' },
+  deepseek: { api_key: '', base_url: '', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, request_mode: 'stream' },
+  longcat: { api_key: '', base_url: '', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, request_mode: 'stream' },
+  custom: { ...localGemmaTextModelDefault },
 };
 
-const textProviderApiKeyUrls: Partial<Record<TextModelProvider, string>> = {
-  jinlong: 'https://s.markup.com.cn/jl',
-  volcengine: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey',
-  deepseek: 'https://platform.deepseek.com/api_keys',
-  longcat: 'https://longcat.chat/platform/api_keys',
-};
+const textProviderApiKeyUrls: Partial<Record<TextModelProvider, string>> = {};
 
 function createDefaultTextModelProfiles(): TextModelProfiles {
   return textModelProviders.reduce((profiles, provider) => ({
@@ -80,10 +71,9 @@ function parseTextContextLengthInput(value: string): number | '' {
 
 function normalizeTextModelProfile(provider: TextModelProvider, profile?: Partial<TextModelConfig>): TextModelConfig {
   const defaults = textProviderDefaults[provider];
-  const baseUrl = provider === 'custom' ? profile?.base_url ?? defaults.base_url : defaults.base_url;
   return {
     api_key: profile?.api_key ?? defaults.api_key,
-    base_url: baseUrl,
+    base_url: profile?.base_url ?? defaults.base_url,
     model_name: profile?.model_name ?? defaults.model_name,
     context_length_limit: normalizeTextContextLengthLimit(profile?.context_length_limit ?? defaults.context_length_limit),
     request_mode: normalizeAiRequestMode(profile?.request_mode ?? defaults.request_mode),
@@ -100,7 +90,7 @@ function normalizeTextModelProfiles(profiles?: Partial<TextModelProfiles>): Text
 function textProfileFromState(textModel: SettingsPageState['textModel']): TextModelConfig {
   return {
     api_key: textModel.api_key,
-    base_url: textModel.provider === 'custom' ? textModel.base_url : textProviderDefaults[textModel.provider].base_url,
+    base_url: textModel.base_url,
     model_name: textModel.model_name,
     context_length_limit: normalizeTextContextLengthLimit(textModel.context_length_limit),
     request_mode: textModel.request_mode,
@@ -108,16 +98,16 @@ function textProfileFromState(textModel: SettingsPageState['textModel']): TextMo
 }
 
 const imageProviders: Array<{ value: ImageModelProvider; label: string }> = [
-  { value: 'jinlong', label: '金龙中转站【推荐】' },
-  { value: 'volcengine', label: '火山方舟' },
+  { value: 'custom', label: '自定义 OpenAI 兼容生图接口' },
+  { value: 'volcengine', label: '火山方舟（自填地址）' },
   { value: 'google-ai-studio', label: 'Google AI Studio' },
-  { value: 'custom', label: '自定义 OpenAI-like' },
+  { value: 'jinlong', label: '其他 OpenAI 兼容生图接口' },
 ];
 
 const imageProviderDefaults: ImageModelProfiles = {
   jinlong: {
     provider: 'jinlong',
-    base_url: 'https://jlaudeapi.com/v1',
+    base_url: '',
     api_key: '',
     model_name: '',
     request_mode: 'stream',
@@ -127,7 +117,7 @@ const imageProviderDefaults: ImageModelProfiles = {
   },
   volcengine: {
     provider: 'volcengine',
-    base_url: 'https://ark.cn-beijing.volces.com/api/v3',
+    base_url: '',
     api_key: '',
     model_name: '',
     request_mode: 'stream',
@@ -137,9 +127,9 @@ const imageProviderDefaults: ImageModelProfiles = {
   },
   'google-ai-studio': {
     provider: 'google-ai-studio',
-    base_url: 'https://generativelanguage.googleapis.com/v1beta',
+    base_url: '',
     api_key: '',
-    model_name: 'gemini-3.1-flash-image-preview',
+    model_name: '',
     request_mode: 'stream',
     status: 'untested',
     tested_at: '',
@@ -158,35 +148,35 @@ const imageProviderDefaults: ImageModelProfiles = {
 };
 
 const imageProviderApiKeyUrls: Record<ImageModelProvider, string> = {
-  jinlong: 'https://s.markup.com.cn/jl',
-  volcengine: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey',
-  'google-ai-studio': 'https://aistudio.google.com/api-keys',
+  jinlong: '',
+  volcengine: '',
+  'google-ai-studio': '',
   custom: '',
 };
 
 const imageProviderLabels: Record<ImageModelProvider, string> = {
-  jinlong: '金龙中转站',
+  jinlong: '其他 OpenAI 兼容生图接口',
   volcengine: '火山方舟',
   'google-ai-studio': 'Google AI Studio',
   custom: '自定义生图服务',
 };
 
 function getImageBaseUrlDescription(provider: ImageModelProvider) {
-  if (provider === 'jinlong') return '金龙中转站 OpenAI 兼容接口地址';
+  if (provider === 'jinlong') return 'OpenAI 兼容生图接口地址';
   if (provider === 'volcengine') return '火山方舟 OpenAI 兼容接口地址';
   if (provider === 'custom') return '填写兼容 OpenAI /images/generations 的接口地址';
   return 'Google Gemini API REST 地址';
 }
 
 function getImageApiKeyDescription(provider: ImageModelProvider) {
-  if (provider === 'jinlong') return '用于调用金龙中转站图片生成 API';
+  if (provider === 'jinlong') return '用于调用 OpenAI 兼容图片生成 API';
   if (provider === 'volcengine') return '用于调用火山方舟图片生成 API';
   if (provider === 'custom') return '用于调用自定义 OpenAI-like 生图接口';
   return '用于调用 Google AI Studio Gemini API';
 }
 
 function getImageModelDescription(provider: ImageModelProvider) {
-  if (provider === 'jinlong') return '填写金龙中转站已开通的生图模型名称';
+  if (provider === 'jinlong') return '填写 OpenAI 兼容接口已开通的生图模型名称';
   if (provider === 'volcengine') return '填写火山方舟控制台中已开通的模型或推理接入点 ID';
   if (provider === 'custom') return '填写自定义接口支持的生图模型名称';
   return '选择或填写支持图片生成的 Gemini 模型';
@@ -196,7 +186,7 @@ function getImageModelPlaceholder(provider: ImageModelProvider) {
   if (provider === 'jinlong') return '请输入已开通的生图模型名称';
   if (provider === 'volcengine') return '请输入已开通的模型或推理接入点 ID';
   if (provider === 'custom') return '请输入 OpenAI-like 生图模型名称';
-  return 'gemini-3.1-flash-image-preview';
+  return '请输入已开通的 Gemini 生图模型名称';
 }
 
 function createDefaultImageModelProfiles(): ImageModelProfiles {
@@ -210,7 +200,7 @@ function normalizeImageModelProfile(provider: ImageModelProvider, profile?: Part
   const defaults = imageProviderDefaults[provider];
   return {
     provider,
-    base_url: provider === 'custom' ? profile?.base_url ?? defaults.base_url : defaults.base_url,
+    base_url: profile?.base_url ?? defaults.base_url,
     api_key: profile?.api_key ?? defaults.api_key,
     model_name: profile?.model_name ?? defaults.model_name,
     request_mode: normalizeAiRequestMode(profile?.request_mode ?? defaults.request_mode),
@@ -230,7 +220,7 @@ function normalizeImageModelProfiles(profiles?: Partial<ImageModelProfiles>): Im
 function imageProfileFromState(imageModel: ImageModelConfig): ImageModelConfig {
   return {
     provider: imageModel.provider,
-    base_url: imageModel.provider === 'custom' ? imageModel.base_url || '' : imageProviderDefaults[imageModel.provider].base_url,
+    base_url: imageModel.base_url || '',
     api_key: imageModel.api_key,
     model_name: imageModel.model_name,
     request_mode: imageModel.request_mode,
@@ -279,8 +269,6 @@ function formatImageTestTime(value?: string) {
 
 const fileParserProviders: Array<{ value: FileParserProvider; label: string }> = [
   { value: 'local', label: '本地解析' },
-  { value: 'mineru-accurate-api', label: 'MinerU-精准解析 API' },
-  { value: 'mineru-agent-api', label: 'MinerU-Agent 轻量解析 API' },
 ];
 
 const parserOptions = [
@@ -292,59 +280,29 @@ const parserOptions = [
     items: [
       ['Token', '无需'],
       ['解析速度', '快'],
-      ['支持格式', 'pdf、jpeg、png、docx、doc、wps、ofd'],
+      ['支持格式', 'txt、md、docx、pdf、doc、wps'],
       ['大小/页数', '无限制'],
       ['解析质量', '高'],
       ['扫描件', '不支持'],
     ],
   },
-  {
-    title: 'MinerU 精准解析 API',
-    badge: '扫描件兜底',
-    tone: 'accent',
-    summary: '解析质量高，适合本地解析失败或扫描件质量要求高的文档。',
-    items: [
-      ['Token', '需要'],
-      ['解析速度', '慢'],
-      ['支持格式', 'pdf、jpeg、png、docx'],
-      ['大小/页数', '≤ 200MB / ≤ 200 页'],
-      ['解析质量', '高'],
-      ['扫描件', '支持'],
-    ],
-  },
-  {
-    title: 'MinerU-Agent 轻量解析 API',
-    badge: '轻量备用',
-    tone: 'muted',
-    summary: '无需 Token 但存在 IP 限频，适合轻量文档的备用解析。',
-    items: [
-      ['Token', '无需（IP 限频）'],
-      ['解析速度', '中等'],
-      ['支持格式', 'pdf、jpeg、png、docx'],
-      ['大小/页数', '≤ 10MB / ≤ 20 页'],
-      ['解析质量', '中'],
-      ['扫描件', '质量差'],
-    ],
-  },
 ];
 
 const initialState: SettingsPageState = {
-  textModel: {
-    provider: 'jinlong',
-    ...textProviderDefaults.jinlong,
-  },
+    textModel: {
+      provider: 'custom',
+      ...textProviderDefaults.custom,
+    },
   textModelProfiles: createDefaultTextModelProfiles(),
-  imageModel: {
-    ...imageProviderDefaults.jinlong,
-  },
+    imageModel: {
+      ...imageProviderDefaults.custom,
+    },
   imageModelProfiles: createDefaultImageModelProfiles(),
   fileParser: {
     provider: 'local',
-    mineru_token: '',
   },
   general: {
     developer_mode: false,
-    update_channel: 'github',
     gpu_hardware_acceleration_enabled: true,
     gpu_hardware_acceleration_configured: true,
   },
@@ -365,39 +323,11 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
   const [testingImageModel, setTestingImageModel] = useState(false);
   const [imageTestPreview, setImageTestPreview] = useState<{ src: string; title: string } | null>(null);
   const [appVersion, setAppVersion] = useState('');
-  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('idle');
-  const [updatePercent, setUpdatePercent] = useState(0);
-  const [updateVersion, setUpdateVersion] = useState('');
-  const [updateError, setUpdateError] = useState('');
   const { showToast } = useToast();
 
   useEffect(() => {
     void loadTextConfig();
     void window.yibiao?.getVersion().then(setAppVersion);
-
-    const unsubs: Array<() => void> = [];
-    unsubs.push(
-      window.yibiao?.onUpdateProgress(({ percent }) => {
-        setUpdateStatus('downloading');
-        setUpdatePercent(Math.round(percent));
-      }) ?? (() => {})
-    );
-    unsubs.push(
-      window.yibiao?.onUpdateDownloaded(({ version }) => {
-        if (version) {
-          setUpdateVersion(version);
-        }
-        setUpdateStatus('downloaded');
-      }) ?? (() => {})
-    );
-    unsubs.push(
-      window.yibiao?.onUpdateError(({ message }) => {
-        setUpdateStatus('error');
-        setUpdateError(message);
-      }) ?? (() => {})
-    );
-
-    return () => { unsubs.forEach((unsub) => unsub()); };
   }, []);
 
   const loadTextConfig = async () => {
@@ -424,11 +354,9 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
         imageModelProfiles,
         fileParser: {
           provider: config.file_parser.provider,
-          mineru_token: config.file_parser.mineru_token || '',
         },
         general: {
           developer_mode: Boolean(config.developer_mode),
-          update_channel: normalizeUpdateChannel(config.update_channel),
           gpu_hardware_acceleration_enabled: Boolean(config.gpu_hardware_acceleration_enabled),
           gpu_hardware_acceleration_configured: Boolean(config.gpu_hardware_acceleration_configured),
         },
@@ -469,59 +397,11 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
       image_model_profiles: imageModelProfiles,
       file_parser: {
         provider: state.fileParser.provider,
-        mineru_token: state.fileParser.mineru_token || '',
       },
-      update_channel: state.general.update_channel,
       gpu_hardware_acceleration_enabled: state.general.gpu_hardware_acceleration_enabled,
       gpu_hardware_acceleration_configured: state.general.gpu_hardware_acceleration_configured,
       developer_mode: state.general.developer_mode,
     };
-  };
-
-  const checkForUpdates = async () => {
-    if (updateStatus === 'checking' || updateStatus === 'downloading') {
-      return;
-    }
-
-    try {
-      setUpdateStatus('checking');
-      setUpdatePercent(0);
-      setUpdateError('');
-      const result = await window.yibiao?.checkUpdate();
-      if (!result?.enabled) {
-        setUpdateStatus('disabled');
-        showToast('开发调试模式不执行自动更新', 'info');
-        return;
-      }
-      if (result.failed) {
-        const message = result.message || '检查更新失败';
-        setUpdateStatus('error');
-        setUpdateError(message);
-        showToast(message, 'error');
-        return;
-      }
-      if (!result.updateAvailable) {
-        setUpdateStatus('idle');
-        showToast('已是最新版本', 'success');
-        return;
-      }
-
-      const version = result.version || updateVersion;
-      setUpdateVersion(version);
-      if (result.downloaded) {
-        setUpdateStatus('downloaded');
-        showUpdateReadyToast(showToast, version);
-        return;
-      }
-
-      setUpdateStatus('idle');
-      showToast('发现新版本，但更新包尚未下载完成，请稍后重试', 'info');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '检查更新失败';
-      setUpdateStatus('error');
-      setUpdateError(message);
-      showToast(message, 'error');
-    }
   };
 
   const updateImageModelConfig = (partial: Partial<Omit<ImageModelConfig, 'provider'>>, options: { clearModels?: boolean } = {}) => {
@@ -584,13 +464,6 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
       general: { ...prev.general, developer_mode: developerMode },
     }));
     onDeveloperModeChange?.(developerMode);
-  };
-
-  const updateUpdateChannel = (updateChannel: UpdateChannel) => {
-    setState((prev) => ({
-      ...prev,
-      general: { ...prev.general, update_channel: updateChannel },
-    }));
   };
 
   const updateGpuHardwareAcceleration = (enabled: boolean) => {
@@ -927,12 +800,10 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
     if (activeTab === 'general') {
       return JSON.stringify({
         developer_mode: Boolean(state.general.developer_mode),
-        update_channel: state.general.update_channel,
         gpu_hardware_acceleration_enabled: Boolean(state.general.gpu_hardware_acceleration_enabled),
         gpu_hardware_acceleration_configured: Boolean(state.general.gpu_hardware_acceleration_configured),
       }) !== JSON.stringify({
         developer_mode: Boolean(savedConfig.developer_mode),
-        update_channel: normalizeUpdateChannel(savedConfig.update_channel),
         gpu_hardware_acceleration_enabled: Boolean(savedConfig.gpu_hardware_acceleration_enabled),
         gpu_hardware_acceleration_configured: Boolean(savedConfig.gpu_hardware_acceleration_configured),
       });
@@ -1045,16 +916,6 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
       ]
     : [];
 
-  const updateBusy = updateStatus === 'checking' || updateStatus === 'downloading';
-  const updateStatusText = (() => {
-    if (updateStatus === 'checking') return '正在检查更新...';
-    if (updateStatus === 'downloading') return `正在下载 ${updatePercent}%`;
-    if (updateStatus === 'downloaded') return updateVersion ? `新版本 ${updateVersion} 已准备好` : '更新已准备好';
-    if (updateStatus === 'error') return `更新失败：${updateError || '未知错误'}`;
-    if (updateStatus === 'disabled') return '开发调试模式不执行自动更新';
-    return '启动后自动检查，每 30 分钟轮询';
-  })();
-
   return (
     <div className="settings-page">
       <div className="settings-page-scroll">
@@ -1107,20 +968,6 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                 <option value="classic">经典布局</option>
               </select>
             </div>
-            <label className="settings-row">
-              <div className="settings-row-copy">
-                <strong>自动更新渠道</strong>
-                <span>{updateChannelOptions.find((option) => option.value === state.general.update_channel)?.description || '选择自动检查更新和下载客户端安装包的来源'}</span>
-              </div>
-              <select
-                value={state.general.update_channel}
-                onChange={(event) => updateUpdateChannel(event.target.value as UpdateChannel)}
-              >
-                {updateChannelOptions.map((option) => (
-                  <option value={option.value} key={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </label>
             <label className="settings-row">
               <div className="settings-row-copy">
                 <strong>GPU 硬件加速</strong>
@@ -1199,7 +1046,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
               <input
                 type="text"
                 value={state.textModel.base_url}
-                placeholder={currentTextProviderDefault.base_url || '例如 https://api.openai.com/v1'}
+                placeholder={currentTextProviderDefault.base_url || '请输入兼容 OpenAI 的接口地址'}
                 onChange={(event) => updateTextModelConfig({ base_url: event.target.value }, { clearModels: true })}
                 disabled={state.textModel.provider !== 'custom'}
               />
@@ -1329,7 +1176,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
               <input
                 type="text"
                 value={state.imageModel.base_url || ''}
-                placeholder={state.imageModel.provider === 'custom' ? 'https://api.example.com/v1' : imageProviderDefaults[state.imageModel.provider].base_url}
+                placeholder="请输入接口地址"
                 onChange={(event) => updateImageModelConfig({ base_url: event.target.value }, { clearModels: true })}
                 disabled={state.imageModel.provider !== 'custom'}
               />
@@ -1422,7 +1269,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
             <label className="settings-row">
               <div className="settings-row-copy">
                 <strong>文件解析方式</strong>
-                <span>优先使用本地解析，复杂扫描件可尝试 MinerU 精准解析 API</span>
+                <span>精简版只保留本地解析，避免把招标文件上传到第三方解析服务</span>
               </div>
               <select
                 value={state.fileParser.provider}
@@ -1436,23 +1283,6 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                 ))}
               </select>
             </label>
-            {state.fileParser.provider === 'mineru-accurate-api' && (
-              <label className="settings-row">
-                <div className="settings-row-copy">
-                  <strong>MinerU Token</strong>
-                  <span>仅精准解析 API 需要 Token；轻量解析和本地解析无需填写</span>
-                </div>
-                <input
-                  type="password"
-                  value={state.fileParser.mineru_token || ''}
-                  placeholder="请输入 MinerU Token"
-                  onChange={(event) => setState((prev) => ({
-                    ...prev,
-                    fileParser: { ...prev.fileParser, mineru_token: event.target.value },
-                  }))}
-                />
-              </label>
-            )}
           </div>
 
           <div className="parser-compare">
@@ -1477,7 +1307,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
             ))}
           </div>
           <div className="parser-note">
-            招标文件大多数是 Word 或 Word 导出的带文字层 PDF，本地解析可以适应 95% 以上的情况；如果解析失败，再尝试 MinerU 精准解析 API。
+            招标文件大多数是 Word 或 Word 导出的带文字层 PDF，本地解析可以覆盖主要场景；扫描件请先在可信环境中 OCR 后再导入。
           </div>
         </section>
       )}
@@ -1490,25 +1320,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
           </div>
           <div className="about-grid">
             <div><span>当前版本</span><strong>{appVersion || '...'}</strong></div>
-            <div><span>GitHub 仓库</span><a href="https://github.com/FB208/OpenBidKit_Yibiao" target="_blank" rel="noreferrer">FB208/OpenBidKit_Yibiao</a></div>
-            <div>
-              <span>自动更新</span>
-              <strong>{updateStatusText}</strong>
-              <button
-                type="button"
-                className="update-button"
-                disabled={updateBusy}
-                onClick={() => {
-                  if (updateStatus === 'downloaded') {
-                    void window.yibiao?.quitAndInstall();
-                    return;
-                  }
-                  void checkForUpdates();
-                }}
-              >
-                {updateStatus === 'downloaded' ? '安装并重启' : updateBusy ? '检查中...' : '检查更新'}
-              </button>
-            </div>
+            <div><span>更新策略</span><strong>精简版已禁用自动更新</strong></div>
             <div><span>运行模式</span><strong>独立 Electron 客户端</strong></div>
           </div>
           <div className="privacy-statement">
@@ -1526,12 +1338,12 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
               <article className="privacy-item">
                 <span>02</span>
                 <strong>线上 AI 请求只发送给你配置的服务商</strong>
-                <p>当你使用 OpenAI 兼容接口、MinerU 或其他线上 API 时，应用会把完成任务所需的内容发送给你自行配置的服务商。这是实现文档解析、内容生成、模型测试等功能的必要步骤；这些请求不经过我的服务器，我也不会额外留存任何请求内容或生成结果。</p>
+                <p>当你使用 OpenAI 兼容接口或其他线上 AI API 时，应用会把完成任务所需的内容发送给你自行配置的服务商。这是实现内容生成、模型测试等功能的必要步骤；这些请求不经过本项目服务器。</p>
               </article>
               <article className="privacy-item">
                 <span>03</span>
-                <strong>匿名埋点只用于了解功能使用情况</strong>
-                <p>为了判断开源项目是否有人使用、哪些功能更常用，应用会把匿名页面访问和功能使用次数上报到 Cloudflare。统计不包含文档内容、文件名、本地路径、API Key、用户输入、生成结果或任何可还原业务内容的信息。</p>
+                <strong>精简版不包含遥测和远程公告</strong>
+                <p>本分支已移除匿名埋点、远程公告、资源下载和自动更新外联，后续重构可按业务需要重新设计可审计的开关。</p>
               </article>
             </div>
           </div>

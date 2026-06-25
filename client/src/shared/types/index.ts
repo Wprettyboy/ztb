@@ -1,32 +1,5 @@
 export type { ChatCompletionRequest, ChatMessage, JsonCompletionRequest } from './ai';
 export type {
-  DuplicateAnalysisTabId,
-  DuplicateAnalysisStatus,
-  DuplicateCheckStep,
-  DuplicateCheckTaskState,
-  DuplicateCheckWorkspaceState,
-  DuplicateContentAnalysisState,
-  DuplicateContentExtractionItem,
-  DuplicateContentSentenceItem,
-  DuplicateImageAnalysisState,
-  DuplicateImageFileResult,
-  DuplicateImageItem,
-  DuplicateMetadataAnalysisState,
-  DuplicateMetadataComparisonRow,
-  DuplicateMetadataFileResult,
-  DuplicateMetadataItem,
-  DuplicateOutlineAnalysisState,
-  DuplicateOutlineFileResult,
-  DuplicateOutlineGroup,
-  DuplicateOutlineItem,
-  DuplicateOutlineItemSource,
-  DuplicateOutlineMatchType,
-  DuplicateOutlinePairwiseSimilarity,
-  DuplicateSubTaskProgress,
-  FileSelectionResult,
-  LocalFileSelection,
-} from './bid';
-export type {
   AiConfig,
   AiRequestMode,
   ClientConfig,
@@ -42,9 +15,19 @@ export type {
   TextModelConfig,
   TextModelProvider,
   TextModelProfiles,
-  UpdateChannel,
 } from './config';
 export type { AppMenuItem, SectionId } from './navigation';
+export type {
+  ProcurementActionResult,
+  ProcurementAgentState,
+  ProcurementDocument,
+  ProcurementExtractionStatus,
+  ProcurementExtractionSummary,
+  ProcurementField,
+  ProcurementFieldStatus,
+  ProcurementLogItem,
+  ProcurementTask,
+} from '../../features/procurement-agent/types';
 export type {
   ExportFormatConfig,
   NumberingFormat,
@@ -66,23 +49,4 @@ export {
   HEADING_LEVEL_LABELS,
 } from './exportFormat';
 export type { OutlineData, OutlineItem, OutlineMode, TechnicalRequirementGroup } from './outline';
-export type { GpuHardwareAccelerationStatus, LatestReleaseInfo, UpdateCheckResult, WordExportProgressEvent, WordExportResult, WorkspaceDatabasePhase, WorkspaceDatabaseStatus, YibiaoBridge } from './ipc';
-export type {
-  RejectionCheckFinding,
-  RejectionCheckResultState,
-  RejectionCheckRunStatus,
-  RejectionCheckStep,
-  RejectionCheckOptions,
-  RejectionCheckResultTab,
-  RejectionCheckWorkspaceState,
-  RejectionDocumentContent,
-  RejectionDocumentRole,
-  RejectionDocumentTabId,
-  RejectionDocumentSource,
-  RejectionExtractionSource,
-  RejectionExtractionState,
-  RejectionExtractionStatus,
-  RejectionFindingSeverity,
-  RejectionFindingType,
-  RejectionResultTab,
-} from '../../features/rejection-check/types';
+export type { GpuHardwareAccelerationStatus, WordExportProgressEvent, WordExportResult, WorkspaceDatabasePhase, WorkspaceDatabaseStatus, YibiaoBridge } from './ipc';
