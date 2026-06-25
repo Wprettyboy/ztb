@@ -86,6 +86,7 @@ export interface YibiaoBridge {
     updateField: (payload: { id: string; confirmedValue: string; status?: string }) => Promise<ProcurementAgentState>;
     acceptHighConfidence: (threshold?: number) => Promise<ProcurementAgentState>;
     readTemplatePdf: (payload?: { templateId?: string }) => Promise<ArrayBuffer | Uint8Array | number[]>;
+    analyzeTemplateWithAi?: (payload?: { templateId?: string }) => Promise<ProcurementActionResult>;
     selectTemplate: (payload: { templateId: string }) => Promise<ProcurementAgentState>;
     deleteTemplate: (payload: { templateId: string }) => Promise<ProcurementActionResult>;
     clear: () => Promise<ProcurementAgentState>;

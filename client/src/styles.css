@@ -12295,6 +12295,7 @@ button {
 .procurement-template-library-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   justify-content: flex-end;
   margin-top: auto;
@@ -12303,6 +12304,7 @@ button {
 .procurement-template-library-actions .procurement-primary-button,
 .procurement-template-library-actions .procurement-secondary-button {
   min-height: 36px;
+  min-width: 72px;
   padding: 8px 12px;
 }
 

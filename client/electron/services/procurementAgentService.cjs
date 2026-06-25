@@ -1816,6 +1816,183 @@ function buildExtractionMessages(markdown, task, sourceBlocks, questions = creat
   ];
 }
 
+function guessQuestionType(value) {
+  const type = normalizeString(value);
+  if (['choice', 'multiChoice', 'compound', 'blank'].includes(type)) return type;
+  return 'blank';
+}
+
+function normalizeAiTaskKey(value, fallback) {
+  const key = normalizeFieldKey(value);
+  if (key && key !== 'field') return key;
+  return normalizeFieldKey(fallback) || `ai_task_${crypto.randomUUID().slice(0, 8)}`;
+}
+
+function createAiTemplateAnalysisMessages({ template, blocks, outline }) {
+  const outlineById = new Map((outline || []).map((node) => [node.id, node]));
+  const blockPayload = blocks.map((block) => ({
+    blockId: block.id,
+    order: block.order,
+    pageHint: block.pageHint,
+    outlineId: block.outlineId,
+    chapter: outlineById.get(block.outlineId)?.title || '未归类章节',
+    type: block.type,
+    text: block.text,
+  }));
+
+  return [
+    {
+      role: 'system',
+      content: [
+        '你是中国工程类询比采购文件模板结构解析助手。',
+        '你的任务是把模板原文解析成“固定任务 JSON 包”，供后续 AI 根据采购需求方案逐项填空、选择和回填 Word 使用。',
+        '必须只返回 JSON，不要 Markdown，不要解释，不要代码块。',
+        '只能根据用户提供的 blockId 和 text 生成任务，不允许引用不存在的 blockId。',
+        '只抽取需要后续填写、选择、勾选或复合判断的项目；纯说明、固定条款、注释、格式标题不要生成任务。',
+        '同一业务字段在多个章节重复出现时，应合并成同一个 task，并在 anchors 中保留多个落点。',
+        '遇到“□有/□无 + 空白”“□接受/□不接受”“资质/业绩/人员/财务 + 空白”必须用 compound。',
+        'key 必须使用英文 snake_case，稳定、简短、可复用，例如 project_name、financial_requirement。',
+        'type 只能是 blank、choice、multiChoice、compound；inputKind 只能是 short-text、long-text、select、compound。',
+        'anchor.matchText 必须是原文中能定位的短文本，anchor.sourceText 必须摘取对应 block 的原文片段。',
+      ].join('\n'),
+    },
+    {
+      role: 'user',
+      content: [
+        `模板名称：${template.name || template.fileName}`,
+        '请解析以下模板原文块，输出严格 JSON：',
+        JSON.stringify(blockPayload, null, 2),
+        '',
+        '输出结构必须为：',
+        JSON.stringify({
+          tasks: [
+            {
+              key: 'project_name',
+              label: '项目名称',
+              type: 'blank',
+              inputKind: 'short-text',
+              group: '基础信息',
+              chapter: '封面',
+              required: true,
+              risk: false,
+              prompt: '从采购需求方案中提取项目名称。',
+              placeholder: '填写项目名称',
+              options: [],
+              anchors: [
+                {
+                  blockId: 'tpl_block_xxx',
+                  matchText: '项目名称',
+                  sourceText: '项目名称：',
+                  pageHint: 1,
+                  fillTarget: 'label_tail_blank',
+                },
+              ],
+            },
+          ],
+        }, null, 2),
+      ].join('\n'),
+    },
+  ];
+}
+
+function normalizeAiTaskPack({ template, aiPayload, blocks, outline }) {
+  const generatedAt = nowIso();
+  const blockById = new Map(blocks.map((block) => [block.id, block]));
+  const outlineById = new Map((outline || []).map((node) => [node.id, node]));
+  const tasksByKey = new Map();
+
+  const rawTasks = Array.isArray(aiPayload?.tasks) ? aiPayload.tasks : [];
+  rawTasks.forEach((rawTask, taskIndex) => {
+    const label = normalizeString(rawTask?.label || rawTask?.name || rawTask?.title || '');
+    const key = normalizeAiTaskKey(rawTask?.key || rawTask?.id, label || `ai_task_${taskIndex + 1}`);
+    if (!key || !label) return;
+    const type = guessQuestionType(rawTask?.type);
+    const anchors = (Array.isArray(rawTask?.anchors) ? rawTask.anchors : [])
+      .map((anchor, anchorIndex) => {
+        const blockId = normalizeString(anchor?.blockId || anchor?.block_id || anchor?.id || '');
+        const block = blockById.get(blockId);
+        if (!block) return null;
+        return {
+          id: `${key}_anchor_${String(anchorIndex + 1).padStart(3, '0')}`,
+          fieldId: `ai_field_${key}_${String(anchorIndex + 1).padStart(3, '0')}`,
+          blockId: block.id,
+          outlineId: block.outlineId,
+          blockOrder: block.order,
+          matchText: normalizeString(anchor?.matchText || anchor?.match_text || label),
+          sourceText: normalizeString(anchor?.sourceText || anchor?.source_text || block.text).slice(0, 1200),
+          pageHint: Number(anchor?.pageHint || anchor?.page_hint || block.pageHint || 0) || null,
+          fillTarget: normalizeString(anchor?.fillTarget || anchor?.fill_target || ''),
+        };
+      })
+      .filter(Boolean);
+    if (!anchors.length) return;
+    const firstBlock = blockById.get(anchors[0].blockId);
+    const task = {
+      key,
+      label,
+      type,
+      inputKind: normalizeString(rawTask?.inputKind || rawTask?.input_kind) || inferInputKind(type),
+      group: normalizeString(rawTask?.group) || inferTaskGroup({ label, type, risk: rawTask?.risk }, ''),
+      chapter: normalizeString(rawTask?.chapter) || outlineById.get(firstBlock?.outlineId)?.title || '未归类章节',
+      required: Boolean(rawTask?.required),
+      risk: Boolean(rawTask?.risk),
+      order: 50000 + (taskIndex + 1) * 10,
+      prompt: normalizeString(rawTask?.prompt) || createTaskPrompt({ label, type, risk: rawTask?.risk }),
+      placeholder: normalizeString(rawTask?.placeholder) || label,
+      options: Array.isArray(rawTask?.options) ? rawTask.options.map(normalizeString).filter(Boolean) : [],
+      anchors,
+      validation: { minLength: rawTask?.required ? 1 : 0 },
+      createdAt: generatedAt,
+      updatedAt: generatedAt,
+    };
+    const existing = tasksByKey.get(key);
+    if (existing) {
+      existing.anchors.push(...task.anchors.map((anchor, index) => ({
+        ...anchor,
+        id: `${key}_anchor_${String(existing.anchors.length + index + 1).padStart(3, '0')}`,
+      })));
+    } else {
+      tasksByKey.set(key, task);
+    }
+  });
+
+  const tasks = [...tasksByKey.values()].map((task, index) => ({
+    ...task,
+    order: (index + 1) * 10,
+    anchors: task.anchors.sort((first, second) => first.blockOrder - second.blockOrder),
+  }));
+
+  return {
+    templateId: template.id,
+    templateName: template.name,
+    schemaVersion: `${TEMPLATE_TASK_SCHEMA_VERSION}-ai`,
+    taskCount: tasks.length,
+    generatedAt,
+    tasks,
+  };
+}
+
+function createFieldsFromTaskPack(taskPack) {
+  return (Array.isArray(taskPack?.tasks) ? taskPack.tasks : []).flatMap((task) => (
+    (Array.isArray(task.anchors) ? task.anchors : []).map((anchor) => ({
+      id: anchor.fieldId,
+      key: task.key,
+      label: task.label,
+      type: task.type,
+      required: Boolean(task.required),
+      risk: Boolean(task.risk),
+      options: Array.isArray(task.options) ? task.options : [],
+      outlineId: anchor.outlineId,
+      blockId: anchor.blockId,
+      blockOrder: anchor.blockOrder,
+      sourceText: anchor.sourceText,
+      placeholder: task.placeholder || anchor.matchText || task.label,
+      confidence: 68,
+      status: 'pending',
+    }))
+  ));
+}
+
 function normalizeTaskPayload(payload) {
   const source = payload || {};
   return {
@@ -2321,6 +2498,96 @@ function createProcurementAgentService({ app, configStore, aiService }) {
     return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
   }
 
+  async function analyzeTemplateWithAi(payload = {}) {
+    const state = await loadState();
+    const templateId = normalizeString(payload?.templateId) || state.activeTemplateId;
+    const template = state.templateLibrary.find((item) => item.id === templateId);
+    if (!template) {
+      return { success: false, message: '未找到要进行 AI 解析的模板', state };
+    }
+
+    const sourcePath = template.storedPath || template.normalizedPath;
+    const normalizedPath = template.normalizedPath || sourcePath;
+    const scanResult = await scanAndNormalizeTemplateDocx(sourcePath, normalizedPath, template.id, template.fileName);
+    const blocks = scanResult.blocks.filter((block) => normalizeString(block.text).length >= 2);
+    if (!blocks.length) {
+      return { success: false, message: '模板没有可供 AI 解析的原文块', state };
+    }
+
+    const pageCount = Math.max(1, template.previewPageImages?.length || Math.ceil(blocks.length / 18));
+    const pageSize = Math.max(1, Math.ceil(blocks.length / pageCount));
+    const blocksWithPageHint = blocks.map((block, index) => ({
+      ...block,
+      pageHint: Math.min(pageCount, Math.floor(index / pageSize) + 1),
+    }));
+    const batches = [];
+    for (let page = 1; page <= pageCount; page += 1) {
+      const pageBlocks = blocksWithPageHint.filter((block) => block.pageHint === page);
+      if (pageBlocks.length) batches.push(pageBlocks);
+    }
+
+    const partialTasks = [];
+    for (const batch of batches) {
+      const aiPayload = await aiService.requestJson({
+        messages: createAiTemplateAnalysisMessages({ template, blocks: batch, outline: scanResult.outline }),
+        temperature: 0.1,
+        timeout_ms: 300000,
+        schemaName: 'procurement_template_task_pack',
+        progressLabel: `模板 AI 解析 第 ${batch[0].pageHint} 页`,
+        failureMessage: '模型返回的模板任务 JSON 无效',
+        logTitle: '模板 AI 任务解析',
+      });
+      if (Array.isArray(aiPayload?.tasks)) {
+        partialTasks.push(...aiPayload.tasks);
+      }
+    }
+
+    const aiTaskPack = normalizeAiTaskPack({
+      template,
+      aiPayload: { tasks: partialTasks },
+      blocks: blocksWithPageHint,
+      outline: scanResult.outline,
+    });
+    if (!aiTaskPack.tasks.length) {
+      return { success: false, message: 'AI 没有识别出可用任务，请调整提示词或模板结构后重试', state };
+    }
+
+    const savedTaskPack = await saveTemplateTaskPack(app, aiTaskPack);
+    const questions = createTemplateQuestions(savedTaskPack.tasks);
+    const answers = createMissingAnswers(questions);
+    const fields = answersToFields(answers, questions);
+    const nextState = addLog(ensureStateShape({
+      ...state,
+      task: {
+        ...state.task,
+        templateName: template.name,
+      },
+      activeTemplateId: template.id,
+      templateOutline: scanResult.outline,
+      templateBlocks: scanResult.blocks,
+      templateFields: createFieldsFromTaskPack(savedTaskPack),
+      templateTaskPack: savedTaskPack,
+      questions,
+      answers,
+      fields,
+      templateScan: {
+        ...createTemplateScanSummary(
+          scanResult,
+          'loaded',
+          `AI 解析完成：生成 ${savedTaskPack.tasks.length} 个任务，覆盖 ${savedTaskPack.tasks.reduce((sum, task) => sum + task.anchors.length, 0)} 个锚点`,
+        ),
+        previewStatus: template.previewPdfPath ? 'ready' : 'unavailable',
+        previewMessage: template.previewPdfPath ? 'PDF 预览已就绪' : '当前模板没有 PDF 预览',
+      },
+    }), `AI 已解析模板任务包：${template.fileName}，生成 ${savedTaskPack.tasks.length} 个任务`);
+
+    return {
+      success: true,
+      message: `AI 解析完成，生成 ${savedTaskPack.tasks.length} 个任务`,
+      state: await persist(nextState),
+    };
+  }
+
   async function selectTemplate(payload = {}) {
     const state = await loadState();
     const templateId = normalizeString(payload?.templateId);
@@ -2434,6 +2701,7 @@ function createProcurementAgentService({ app, configStore, aiService }) {
     updateField,
     acceptHighConfidence,
     readTemplatePdf,
+    analyzeTemplateWithAi,
     selectTemplate,
     deleteTemplate,
     clear,

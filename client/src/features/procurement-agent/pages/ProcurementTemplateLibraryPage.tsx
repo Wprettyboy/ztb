@@ -136,6 +136,23 @@ function ProcurementTemplateLibraryPage({ onNavigate }: ProcurementTemplateLibra
     }
   };
 
+  const analyzeTemplateWithAi = async (template: ProcurementTemplateItem) => {
+    if (!window.yibiao?.procurementAgent.analyzeTemplateWithAi) {
+      showToast('当前版本暂未启用模板 AI 解析能力，请重启客户端后再试。', 'info');
+      return;
+    }
+    try {
+      setLoading(true);
+      const result = await window.yibiao.procurementAgent.analyzeTemplateWithAi({ templateId: template.id });
+      setState(result.state);
+      showToast(result.message || 'AI 解析完成', result.success ? 'success' : 'error');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'AI 解析模板失败', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const viewTemplate = async (template: ProcurementTemplateItem) => {
     if (template.id === state.activeTemplateId) {
       onNavigate('procurement-template-detail');
@@ -235,6 +252,9 @@ function ProcurementTemplateLibraryPage({ onNavigate }: ProcurementTemplateLibra
                     <span>规范化标题：{template.stats.normalizedHeadingCount || 0} 处</span>
                   </div>
                   <div className="procurement-template-library-actions">
+                    <button type="button" className="procurement-secondary-button" disabled={loading} onClick={() => void analyzeTemplateWithAi(template)}>
+                      AI解析
+                    </button>
                     <button type="button" className="procurement-primary-button" disabled={loading} onClick={() => void viewTemplate(template)}>查看详情</button>
                     <button type="button" className="procurement-secondary-button" disabled={loading} onClick={() => void deleteTemplate(template)}>删除</button>
                   </div>
