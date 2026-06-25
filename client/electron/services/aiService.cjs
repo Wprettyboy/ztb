@@ -722,20 +722,29 @@ async function ensureTextAiResponseOk(response, fallbackMessage) {
 }
 
 function getStreamChoiceContent(choice) {
-  const deltaContent = choice?.delta?.content;
-  const messageContent = choice?.message?.content;
-  const textContent = choice?.text;
+  const candidates = [
+    choice?.delta?.content,
+    choice?.delta?.reasoning_content,
+    choice?.delta?.reasoning,
+    choice?.delta?.thinking,
+    choice?.message?.content,
+    choice?.message?.reasoning_content,
+    choice?.text,
+    choice?.content,
+  ];
 
-  if (typeof deltaContent === 'string') {
-    return deltaContent;
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate) {
+      return candidate;
+    }
   }
 
-  if (typeof messageContent === 'string') {
-    return messageContent;
-  }
-
-  if (typeof textContent === 'string') {
-    return textContent;
+  const toolCalls = choice?.delta?.tool_calls || choice?.message?.tool_calls;
+  if (Array.isArray(toolCalls) && toolCalls.length) {
+    return toolCalls
+      .map((call) => call?.function?.arguments || call?.function?.name || '')
+      .filter(Boolean)
+      .join('');
   }
 
   return '';

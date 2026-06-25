@@ -2638,6 +2638,16 @@ function createProcurementAgentService({ app, configStore, aiService }) {
         generatedTasks,
         message: `正在解析第 ${batchIndex}/${batches.length} 批，第 ${batch[0].pageHint} 页附近`,
       });
+      emitEvent({
+        type: 'template-ai-analysis-stream',
+        status: 'stream-waiting',
+        templateId: template.id,
+        templateName: template.name,
+        batchIndex,
+        totalBatches: batches.length,
+        delta: `\n[第 ${batchIndex}/${batches.length} 批已发送到本地模型，等待流式输出...]\n`,
+        updatedAt: nowIso(),
+      });
       let aiPayload;
       try {
         aiPayload = await aiService.requestJson({
