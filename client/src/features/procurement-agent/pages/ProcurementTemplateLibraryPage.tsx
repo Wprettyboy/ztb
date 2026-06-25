@@ -80,6 +80,13 @@ interface ProcurementAiAnalysisEvent {
   updatedAt?: string;
 }
 
+interface ProcurementAiAnalysisLog {
+  id: string;
+  status: string;
+  message: string;
+  updatedAt: string;
+}
+
 function templateDedupKey(template: ProcurementTemplateItem) {
   return String(template.fileName || template.name || '')
     .replace(/\.[^.]+$/, '')
@@ -111,6 +118,7 @@ function ProcurementTemplateLibraryPage({ onNavigate }: ProcurementTemplateLibra
   const [state, setState] = useState<ProcurementAgentState>(emptyTemplateState);
   const [loading, setLoading] = useState(false);
   const [aiAnalysisEvent, setAiAnalysisEvent] = useState<ProcurementAiAnalysisEvent | null>(null);
+  const [aiAnalysisLogs, setAiAnalysisLogs] = useState<ProcurementAiAnalysisLog[]>([]);
   const backendAvailable = Boolean(window.yibiao?.procurementAgent);
   const { showToast } = useToast();
   const templates = useMemo(
@@ -130,6 +138,15 @@ function ProcurementTemplateLibraryPage({ onNavigate }: ProcurementTemplateLibra
       const nextEvent = event as ProcurementAiAnalysisEvent;
       if (nextEvent?.type !== 'template-ai-analysis') return;
       setAiAnalysisEvent(nextEvent);
+      setAiAnalysisLogs((prev) => [
+        {
+          id: `${nextEvent.status}-${nextEvent.updatedAt || Date.now()}-${prev.length}`,
+          status: nextEvent.status,
+          message: nextEvent.message || 'AI解析状态更新',
+          updatedAt: nextEvent.updatedAt || new Date().toISOString(),
+        },
+        ...prev,
+      ].slice(0, 8));
       if (['success', 'error'].includes(nextEvent.status)) {
         void loadState();
       }
@@ -170,6 +187,12 @@ function ProcurementTemplateLibraryPage({ onNavigate }: ProcurementTemplateLibra
     }
     try {
       setLoading(true);
+      setAiAnalysisLogs([{
+        id: `starting-${Date.now()}`,
+        status: 'starting',
+        message: '正在提交 AI 解析任务...',
+        updatedAt: new Date().toISOString(),
+      }]);
       setAiAnalysisEvent({
         type: 'template-ai-analysis',
         status: 'starting',
@@ -185,6 +208,16 @@ function ProcurementTemplateLibraryPage({ onNavigate }: ProcurementTemplateLibra
     } finally {
       setLoading(false);
     }
+  };
+
+  const openAiAnalysisPreview = async () => {
+    const templateId = aiAnalysisEvent?.templateId;
+    const template = templates.find((item) => item.id === templateId);
+    if (!template) {
+      showToast('未找到 AI 解析完成的模板，请刷新模板库后重试。', 'error');
+      return;
+    }
+    await viewTemplate(template);
   };
 
   const viewTemplate = async (template: ProcurementTemplateItem) => {
@@ -257,6 +290,14 @@ function ProcurementTemplateLibraryPage({ onNavigate }: ProcurementTemplateLibra
 
       <main className="procurement-agent-body">
         <section className="procurement-template-library-layout">
+          {aiAnalysisEvent && (
+            <AiAnalysisWorkbench
+              event={aiAnalysisEvent}
+              logs={aiAnalysisLogs}
+              onOpenPreview={() => void openAiAnalysisPreview()}
+            />
+          )}
+
           <div className="procurement-template-library-toolbar">
             <div>
               <h3>已存模板</h3>
@@ -285,9 +326,6 @@ function ProcurementTemplateLibraryPage({ onNavigate }: ProcurementTemplateLibra
                     <span>扫描时间：{formatTime(template.scannedAt)}</span>
                     <span>规范化标题：{template.stats.normalizedHeadingCount || 0} 处</span>
                   </div>
-                  {aiAnalysisEvent?.templateId === template.id && (
-                    <AiAnalysisProgress event={aiAnalysisEvent} />
-                  )}
                   <div className="procurement-template-library-actions">
                     <button type="button" className="procurement-secondary-button" disabled={loading} onClick={() => void analyzeTemplateWithAi(template)}>
                       AI解析
@@ -320,29 +358,59 @@ function formatTime(value: string) {
   return date.toLocaleString('zh-CN', { hour12: false });
 }
 
-function AiAnalysisProgress({ event }: { event: ProcurementAiAnalysisEvent }) {
+function AiAnalysisWorkbench({
+  event,
+  logs,
+  onOpenPreview,
+}: {
+  event: ProcurementAiAnalysisEvent;
+  logs: ProcurementAiAnalysisLog[];
+  onOpenPreview: () => void;
+}) {
   const total = Math.max(0, Number(event.totalBatches || 0));
   const completed = Math.max(0, Number(event.completedBatches || 0));
   const failed = Math.max(0, Number(event.failedBatches || 0));
   const progress = total ? Math.min(100, Math.round(((completed + failed) / total) * 100)) : 0;
   const isDone = event.status === 'success';
-  const isError = event.status === 'error' || event.status === 'batch-error';
+  const isError = event.status === 'error';
 
   return (
-    <div className={`procurement-ai-analysis-progress${isDone ? ' is-done' : ''}${isError ? ' is-error' : ''}`}>
-      <div>
-        <strong>{isDone ? 'AI解析完成' : isError ? 'AI解析异常' : 'AI解析中'}</strong>
-        <span>{event.message || '正在调用本地模型解析模板任务'}</span>
+    <section className={`procurement-ai-analysis-workbench${isDone ? ' is-done' : ''}${isError ? ' is-error' : ''}`}>
+      <div className="procurement-ai-analysis-main">
+        <div className="procurement-ai-analysis-title">
+          <span>{isDone ? '已完成' : isError ? '异常' : '运行中'}</span>
+          <div>
+            <h3>{event.templateName || '模板'} AI解析</h3>
+            <p>{event.message || '正在调用本地模型解析模板任务'}</p>
+          </div>
+        </div>
+        <div className="procurement-ai-analysis-bar" aria-label="AI解析进度">
+          <i style={{ width: `${progress}%` }} />
+        </div>
+        <div className="procurement-ai-analysis-metrics">
+          <span><strong>{progress}%</strong>进度</span>
+          <span><strong>{total ? `${completed + failed}/${total}` : '-'}</strong>批次</span>
+          <span><strong>{Number(event.generatedTasks || 0)}</strong>任务</span>
+          <span><strong>{failed}</strong>失败</span>
+        </div>
+        {isDone && (
+          <button type="button" className="procurement-primary-button" onClick={onOpenPreview}>
+            查看AI解析详情
+          </button>
+        )}
       </div>
-      <div className="procurement-ai-analysis-bar" aria-label="AI解析进度">
-        <i style={{ width: `${progress}%` }} />
+      <div className="procurement-ai-analysis-log">
+        <strong>解析状态</strong>
+        {logs.length ? logs.map((log) => (
+          <p key={log.id}>
+            <span>{formatTime(log.updatedAt)}</span>
+            {log.message}
+          </p>
+        )) : (
+          <p><span>等待中</span>准备接收本地模型状态。</p>
+        )}
       </div>
-      <p>
-        <span>{total ? `${completed + failed}/${total} 批` : '准备中'}</span>
-        <span>{Number(event.generatedTasks || 0)} 个任务</span>
-        {failed > 0 && <span>{failed} 批失败</span>}
-      </p>
-    </div>
+    </section>
   );
 }
 

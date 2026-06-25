@@ -364,6 +364,11 @@ function clampConfidence(value) {
   return Math.max(0, Math.min(100, Math.round(number)));
 }
 
+function isCurrentTemplateTaskSchema(schemaVersion) {
+  const value = normalizeString(schemaVersion);
+  return value === TEMPLATE_TASK_SCHEMA_VERSION || value === `${TEMPLATE_TASK_SCHEMA_VERSION}-ai`;
+}
+
 function normalizeString(value) {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
 }
@@ -2097,9 +2102,9 @@ function createProcurementAgentService({ app, configStore, aiService }) {
         return persist(addLog(state, `已清理 ${dedupedLibrary.removed.length} 个重复模板记录`));
       }
       const activeTemplate = state.templateLibrary.find((template) => template.id === state.activeTemplateId);
-      if (activeTemplate && (!state.templateTaskPack.tasks.length || state.templateTaskPack.schemaVersion !== TEMPLATE_TASK_SCHEMA_VERSION)) {
+      if (activeTemplate && (!state.templateTaskPack.tasks.length || !isCurrentTemplateTaskSchema(state.templateTaskPack.schemaVersion))) {
         const taskPack = await readTemplateTaskPack(app, activeTemplate);
-        if (taskPack.tasks.length && taskPack.schemaVersion === TEMPLATE_TASK_SCHEMA_VERSION) {
+        if (taskPack.tasks.length && isCurrentTemplateTaskSchema(taskPack.schemaVersion)) {
           return persist(ensureStateShape({
             ...state,
             templateTaskPack: taskPack,
@@ -2738,7 +2743,7 @@ function createProcurementAgentService({ app, configStore, aiService }) {
 
     const scanResult = await scanAndNormalizeTemplateDocx(sourcePath, normalizedPath, template.id, template.fileName);
     let taskPack = await readTemplateTaskPack(app, template);
-    if (!taskPack.tasks.length || taskPack.schemaVersion !== TEMPLATE_TASK_SCHEMA_VERSION) {
+    if (!taskPack.tasks.length || !isCurrentTemplateTaskSchema(taskPack.schemaVersion)) {
       taskPack = await saveTemplateTaskPack(app, buildTemplateTaskPack({
         templateId: template.id,
         templateName: template.name,
