@@ -2065,6 +2065,37 @@ function createProcurementAgentService({ app, configStore, aiService }) {
     });
   }
 
+  function createStreamEmitter(template, batchIndex, totalBatches) {
+    let buffer = '';
+    let lastFlushAt = 0;
+
+    function flush(force = false) {
+      const now = Date.now();
+      if (!buffer || (!force && now - lastFlushAt < 180)) return;
+      const delta = buffer;
+      buffer = '';
+      lastFlushAt = now;
+      emitEvent({
+        type: 'template-ai-analysis-stream',
+        status: 'streaming',
+        templateId: template.id,
+        templateName: template.name,
+        batchIndex,
+        totalBatches,
+        delta,
+        updatedAt: nowIso(),
+      });
+    }
+
+    return {
+      push(delta) {
+        buffer += String(delta || '');
+        flush(false);
+      },
+      flush,
+    };
+  }
+
   async function persist(state) {
     const nextState = ensureStateShape({
       ...state,
@@ -2594,16 +2625,18 @@ function createProcurementAgentService({ app, configStore, aiService }) {
     let generatedTasks = 0;
 
     const batchResults = await runWithConcurrency(batches, concurrency, async (batch, index) => {
+      const batchIndex = index + 1;
+      const streamEmitter = createStreamEmitter(template, batchIndex, batches.length);
       emitAiAnalysisProgress({
         status: 'batch-running',
         templateId: template.id,
         templateName: template.name,
-        batchIndex: index + 1,
+        batchIndex,
         totalBatches: batches.length,
         completedBatches,
         failedBatches,
         generatedTasks,
-        message: `正在解析第 ${index + 1}/${batches.length} 批，第 ${batch[0].pageHint} 页附近`,
+        message: `正在解析第 ${batchIndex}/${batches.length} 批，第 ${batch[0].pageHint} 页附近`,
       });
       let aiPayload;
       try {
@@ -2617,8 +2650,11 @@ function createProcurementAgentService({ app, configStore, aiService }) {
           progressLabel: `模板 AI 解析 第 ${batch[0].pageHint} 页`,
           failureMessage: '模型返回的模板任务 JSON 无效',
           logTitle: '模板 AI 任务解析',
+          streamCallback: (delta) => streamEmitter.push(delta),
         });
+        streamEmitter.flush(true);
       } catch (error) {
+        streamEmitter.flush(true);
         const config = configStore.load();
         const baseUrl = normalizeString(config.base_url || 'http://127.0.0.1:8088/v1');
         const reason = error?.message || '未知错误';
@@ -2630,7 +2666,7 @@ function createProcurementAgentService({ app, configStore, aiService }) {
           status: 'batch-error',
           templateId: template.id,
           templateName: template.name,
-          batchIndex: index + 1,
+          batchIndex,
           totalBatches: batches.length,
           completedBatches,
           failedBatches,
@@ -2646,12 +2682,12 @@ function createProcurementAgentService({ app, configStore, aiService }) {
         status: 'batch-done',
         templateId: template.id,
         templateName: template.name,
-        batchIndex: index + 1,
+        batchIndex,
         totalBatches: batches.length,
         completedBatches,
         failedBatches,
         generatedTasks,
-        message: `第 ${index + 1}/${batches.length} 批完成，识别 ${tasks.length} 个任务`,
+        message: `第 ${batchIndex}/${batches.length} 批完成，识别 ${tasks.length} 个任务`,
       });
       return { tasks };
     });

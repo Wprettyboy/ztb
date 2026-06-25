@@ -87,6 +87,17 @@ interface ProcurementAiAnalysisLog {
   updatedAt: string;
 }
 
+interface ProcurementAiAnalysisStreamEvent {
+  type: 'template-ai-analysis-stream';
+  status: string;
+  templateId: string;
+  templateName?: string;
+  batchIndex?: number;
+  totalBatches?: number;
+  delta?: string;
+  updatedAt?: string;
+}
+
 function templateDedupKey(template: ProcurementTemplateItem) {
   return String(template.fileName || template.name || '')
     .replace(/\.[^.]+$/, '')
@@ -119,6 +130,8 @@ function ProcurementTemplateLibraryPage({ onNavigate }: ProcurementTemplateLibra
   const [loading, setLoading] = useState(false);
   const [aiAnalysisEvent, setAiAnalysisEvent] = useState<ProcurementAiAnalysisEvent | null>(null);
   const [aiAnalysisLogs, setAiAnalysisLogs] = useState<ProcurementAiAnalysisLog[]>([]);
+  const [aiStreamText, setAiStreamText] = useState('');
+  const [aiStreamMeta, setAiStreamMeta] = useState<{ batchIndex?: number; totalBatches?: number; updatedAt?: string }>({});
   const backendAvailable = Boolean(window.yibiao?.procurementAgent);
   const { showToast } = useToast();
   const templates = useMemo(
@@ -135,6 +148,17 @@ function ProcurementTemplateLibraryPage({ onNavigate }: ProcurementTemplateLibra
   useEffect(() => {
     if (!window.yibiao?.procurementAgent.onEvent) return undefined;
     return window.yibiao.procurementAgent.onEvent((event) => {
+      const streamEvent = event as ProcurementAiAnalysisStreamEvent;
+      if (streamEvent?.type === 'template-ai-analysis-stream') {
+        setAiStreamMeta({
+          batchIndex: streamEvent.batchIndex,
+          totalBatches: streamEvent.totalBatches,
+          updatedAt: streamEvent.updatedAt,
+        });
+        setAiStreamText((prev) => `${prev}${streamEvent.delta || ''}`.slice(-6000));
+        return;
+      }
+
       const nextEvent = event as ProcurementAiAnalysisEvent;
       if (nextEvent?.type !== 'template-ai-analysis') return;
       setAiAnalysisEvent(nextEvent);
@@ -149,6 +173,9 @@ function ProcurementTemplateLibraryPage({ onNavigate }: ProcurementTemplateLibra
       ].slice(0, 8));
       if (['success', 'error'].includes(nextEvent.status)) {
         void loadState();
+      }
+      if (nextEvent.status === 'batch-running') {
+        setAiStreamText('');
       }
     });
   }, []);
@@ -187,6 +214,8 @@ function ProcurementTemplateLibraryPage({ onNavigate }: ProcurementTemplateLibra
     }
     try {
       setLoading(true);
+      setAiStreamText('');
+      setAiStreamMeta({});
       setAiAnalysisLogs([{
         id: `starting-${Date.now()}`,
         status: 'starting',
@@ -294,6 +323,8 @@ function ProcurementTemplateLibraryPage({ onNavigate }: ProcurementTemplateLibra
             <AiAnalysisWorkbench
               event={aiAnalysisEvent}
               logs={aiAnalysisLogs}
+              streamText={aiStreamText}
+              streamMeta={aiStreamMeta}
               onOpenPreview={() => void openAiAnalysisPreview()}
             />
           )}
@@ -361,10 +392,14 @@ function formatTime(value: string) {
 function AiAnalysisWorkbench({
   event,
   logs,
+  streamText,
+  streamMeta,
   onOpenPreview,
 }: {
   event: ProcurementAiAnalysisEvent;
   logs: ProcurementAiAnalysisLog[];
+  streamText: string;
+  streamMeta: { batchIndex?: number; totalBatches?: number; updatedAt?: string };
   onOpenPreview: () => void;
 }) {
   const total = Math.max(0, Number(event.totalBatches || 0));
@@ -409,6 +444,15 @@ function AiAnalysisWorkbench({
         )) : (
           <p><span>等待中</span>准备接收本地模型状态。</p>
         )}
+      </div>
+      <div className="procurement-ai-analysis-stream">
+        <div>
+          <strong>流式输出</strong>
+          <span>
+            {streamMeta.batchIndex ? `第 ${streamMeta.batchIndex}/${streamMeta.totalBatches || '-'} 批` : '等待模型输出'}
+          </span>
+        </div>
+        <pre>{streamText || '模型输出会实时显示在这里。'}</pre>
       </div>
     </section>
   );

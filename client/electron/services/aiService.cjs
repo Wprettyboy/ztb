@@ -721,24 +721,31 @@ async function ensureTextAiResponseOk(response, fallbackMessage) {
   throw createAiHttpError(detail, fallbackMessage);
 }
 
-function appendStreamChoiceContent(choice, contentParts) {
+function getStreamChoiceContent(choice) {
   const deltaContent = choice?.delta?.content;
   const messageContent = choice?.message?.content;
   const textContent = choice?.text;
 
   if (typeof deltaContent === 'string') {
-    contentParts.push(deltaContent);
-    return;
+    return deltaContent;
   }
 
   if (typeof messageContent === 'string') {
-    contentParts.push(messageContent);
-    return;
+    return messageContent;
   }
 
   if (typeof textContent === 'string') {
-    contentParts.push(textContent);
+    return textContent;
   }
+
+  return '';
+}
+
+function appendStreamChoiceContent(choice, contentParts, onDelta) {
+  const content = getStreamChoiceContent(choice);
+  if (!content) return;
+  contentParts.push(content);
+  onDelta?.(content);
 }
 
 function normalizeStreamPayloadError(error, fallbackMessage) {
@@ -823,7 +830,7 @@ async function readSseJsonStream(response, options = {}) {
   }
 }
 
-async function readOpenAIChatStream(response) {
+async function readOpenAIChatStream(response, options = {}) {
   const state = { usage: null, contentParts: [] };
 
   await readSseJsonStream(response, {
@@ -836,7 +843,7 @@ async function readOpenAIChatStream(response) {
       }
 
       const choices = Array.isArray(payload?.choices) ? payload.choices : [];
-      choices.forEach((choice) => appendStreamChoiceContent(choice, state.contentParts));
+      choices.forEach((choice) => appendStreamChoiceContent(choice, state.contentParts, options.onDelta));
     },
   });
 
@@ -866,7 +873,7 @@ async function requestTextAiNormal(app, config, requestBody, options = {}) {
 async function requestTextAiStream(app, config, requestBody, options = {}) {
   const response = await fetchChatCompletion(app, config, requestBody, { signal: options.signal });
   await ensureTextAiResponseOk(response, 'AI 请求失败');
-  return readOpenAIChatStream(response);
+  return readOpenAIChatStream(response, { onDelta: options.onDelta });
 }
 
 async function requestTextAi(app, config, requestBody, options = {}) {
@@ -1116,14 +1123,14 @@ async function chatWithConfig(app, config, request) {
     });
     let result = null;
     try {
-      result = await timeout.run(requestTextAi(app, config, requestBody, { signal: timeout.signal, requestMode }));
+      result = await timeout.run(requestTextAi(app, config, requestBody, { signal: timeout.signal, requestMode, onDelta: request.streamCallback }));
     } catch (error) {
       if (!request.response_format || !error.responseFormatUnsupported) {
         throw error;
       }
 
       requestBody = createChatRequestBody(config, request, { omitResponseFormat: true, stream: requestMode === 'stream' });
-      result = await timeout.run(requestTextAi(app, config, requestBody, { signal: timeout.signal, requestMode }));
+      result = await timeout.run(requestTextAi(app, config, requestBody, { signal: timeout.signal, requestMode, onDelta: request.streamCallback }));
     }
 
     responseData = result.responseData;
