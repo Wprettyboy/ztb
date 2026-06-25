@@ -569,6 +569,55 @@ async function readTemplateTaskPack(app, template) {
   }
 }
 
+async function readTemplatePageTaskPack(app, template) {
+  const templateId = normalizeString(template?.id || '');
+  const templateName = normalizeString(template?.name || '');
+  if (!templateId) {
+    return {
+      templateId: '',
+      templateName,
+      pageCount: 0,
+      generatedAt: '',
+      pages: [],
+    };
+  }
+
+  const packDir = getTemplateTaskPackDir(app, templateId);
+  const pageTaskDir = getTemplatePageTaskDir(app, templateId);
+  try {
+    const manifest = await readJsonFile(path.join(packDir, 'page-manifest.json'));
+    const pageFiles = Array.isArray(manifest.pages)
+      ? manifest.pages.map((page) => page.fileName).filter(Boolean)
+      : [];
+    const files = pageFiles.length
+      ? pageFiles
+      : (await fs.readdir(pageTaskDir)).filter((fileName) => /^page-\d{3}\.json$/i.test(fileName)).sort();
+    const pages = [];
+    for (const fileName of files) {
+      try {
+        pages.push(await readJsonFile(path.join(pageTaskDir, fileName)));
+      } catch {
+        // 单页任务文件损坏或缺失时跳过，前端仍可展示其他页。
+      }
+    }
+    return {
+      templateId,
+      templateName: manifest.templateName || templateName,
+      pageCount: Number(manifest.pageCount || pages.length) || pages.length,
+      generatedAt: manifest.generatedAt || '',
+      pages: pages.sort((first, second) => Number(first.page || 0) - Number(second.page || 0)),
+    };
+  } catch {
+    return {
+      templateId,
+      templateName,
+      pageCount: 0,
+      generatedAt: '',
+      pages: [],
+    };
+  }
+}
+
 function createTemplateQuestions(sourceTasks = []) {
   const tasks = Array.isArray(sourceTasks) ? sourceTasks.filter((task) => task?.key) : [];
   if (tasks.length) {
@@ -690,6 +739,10 @@ function getTemplateTaskPackDir(app, templateId) {
 
 function getTemplateTaskDir(app, templateId) {
   return path.join(getTemplateTaskPackDir(app, templateId), 'tasks');
+}
+
+function getTemplatePageTaskDir(app, templateId) {
+  return path.join(getTemplateTaskPackDir(app, templateId), 'page-tasks');
 }
 
 function safeFileStem(value) {
@@ -2647,6 +2700,23 @@ function createProcurementAgentService({ app, configStore, aiService }) {
     return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
   }
 
+  async function readTemplatePageTasks(payload = {}) {
+    const state = await loadState();
+    const templateId = normalizeString(payload?.templateId) || state.activeTemplateId;
+    const template = state.templateLibrary.find((item) => item.id === templateId)
+      || state.templateLibrary.find((item) => item.id === state.activeTemplateId);
+    if (!template) {
+      return {
+        templateId,
+        templateName: '',
+        pageCount: 0,
+        generatedAt: '',
+        pages: [],
+      };
+    }
+    return readTemplatePageTaskPack(app, template);
+  }
+
   async function analyzeTemplateWithAi(payload = {}) {
     const state = await loadState();
     const templateId = normalizeString(payload?.templateId) || state.activeTemplateId;
@@ -2949,6 +3019,7 @@ function createProcurementAgentService({ app, configStore, aiService }) {
     updateField,
     acceptHighConfidence,
     readTemplatePdf,
+    readTemplatePageTasks,
     analyzeTemplateWithAi,
     selectTemplate,
     deleteTemplate,

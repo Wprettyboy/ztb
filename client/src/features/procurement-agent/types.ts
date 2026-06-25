@@ -1,7 +1,7 @@
 export type ProcurementFieldStatus = 'confirmed' | 'pending' | 'risk' | 'missing';
 export type ProcurementExtractionStatus = 'idle' | 'parsed' | 'extracting' | 'extracted' | 'error';
 export type ProcurementQuestionType = 'blank' | 'choice' | 'multiChoice' | 'compound';
-export type ProcurementQuestionInputKind = 'short-text' | 'long-text' | 'select' | 'compound';
+export type ProcurementQuestionInputKind = 'short-text' | 'long-text' | 'select' | 'multi-select' | 'compound';
 
 export interface ProcurementTask {
   id: string;
@@ -145,6 +145,45 @@ export interface ProcurementTemplateTaskPack {
   taskCount: number;
   generatedAt: string;
   tasks: ProcurementTemplateTaskDefinition[];
+}
+
+export interface ProcurementTemplatePageTaskAnchor {
+  matchText: string;
+  sourceText: string;
+  pageHint: number;
+}
+
+export interface ProcurementTemplatePageTaskItem {
+  key: string;
+  label: string;
+  type: ProcurementQuestionType | 'calculated';
+  inputKind: ProcurementQuestionInputKind | 'number';
+  required: boolean;
+  risk: boolean;
+  group: string;
+  chapter: string;
+  prompt: string;
+  placeholder: string;
+  options: string[];
+  anchors: ProcurementTemplatePageTaskAnchor[];
+}
+
+export interface ProcurementTemplatePageTask {
+  templateId: string;
+  templateName: string;
+  page: number;
+  pageTitle: string;
+  status: string;
+  tasks: ProcurementTemplatePageTaskItem[];
+  noTaskReason: string;
+}
+
+export interface ProcurementTemplatePageTaskPack {
+  templateId: string;
+  templateName: string;
+  pageCount: number;
+  generatedAt: string;
+  pages: ProcurementTemplatePageTask[];
 }
 
 export interface ProcurementTemplateScanSummary {

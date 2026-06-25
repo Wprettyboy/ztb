@@ -8,10 +8,13 @@ import type {
   ProcurementTemplateBlock,
   ProcurementTemplateField,
   ProcurementTemplateItem,
+  ProcurementTemplatePageTask,
+  ProcurementTemplatePageTaskPack,
+  ProcurementTemplatePageTaskItem,
   ProcurementTemplateTaskDefinition,
 } from '../types';
 
-type FieldViewMode = 'page' | 'all';
+type FieldViewMode = 'page' | 'all' | 'pageTasks';
 
 interface ProcurementTemplateDetailPageProps {
   onNavigate: (section: SectionId) => void;
@@ -26,6 +29,13 @@ interface TemplateFieldGroup {
 
 function safeArray<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];
+}
+
+function formatTime(value: string) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString('zh-CN', { hour12: false });
 }
 
 function createCoverBlockIdSet(blocks: ProcurementTemplateBlock[] | null | undefined) {
@@ -113,6 +123,7 @@ function createFallbackTasks(state: ProcurementAgentState): ProcurementTemplateT
 
 function ProcurementTemplateDetailPage({ onNavigate }: ProcurementTemplateDetailPageProps) {
   const [state, setState] = useState<ProcurementAgentState | null>(null);
+  const [pageTaskPack, setPageTaskPack] = useState<ProcurementTemplatePageTaskPack | null>(null);
   const [selectedFieldId, setSelectedFieldId] = useState('');
   const [fieldLocations, setFieldLocations] = useState<Record<string, TemplatePdfFieldLocation>>({});
   const [currentPdfPage, setCurrentPdfPage] = useState(1);
@@ -128,7 +139,14 @@ function ProcurementTemplateDetailPage({ onNavigate }: ProcurementTemplateDetail
     if (!window.yibiao?.procurementAgent) return;
     try {
       const loaded = await window.yibiao.procurementAgent.loadState();
-      if (loaded) setState(loaded);
+      if (loaded) {
+        setState(loaded);
+        const templateId = loaded.activeTemplateId;
+        if (window.yibiao.procurementAgent.readTemplatePageTasks && templateId) {
+          const pageTasks = await window.yibiao.procurementAgent.readTemplatePageTasks({ templateId });
+          setPageTaskPack(pageTasks);
+        }
+      }
     } catch (error) {
       showToast(error instanceof Error ? error.message : '加载模板详情失败', 'error');
     }
@@ -156,6 +174,14 @@ function ProcurementTemplateDetailPage({ onNavigate }: ProcurementTemplateDetail
   const currentPageTasks = useMemo(
     () => visibleTasks.filter((task) => safeArray(task.anchors).some((anchor) => fieldLocations[anchor.fieldId]?.page === currentPdfPage)),
     [currentPdfPage, fieldLocations, visibleTasks],
+  );
+  const currentPageTask = useMemo(
+    () => safeArray(pageTaskPack?.pages).find((page) => page.page === currentPdfPage),
+    [currentPdfPage, pageTaskPack?.pages],
+  );
+  const generatedPageTaskCount = useMemo(
+    () => safeArray(pageTaskPack?.pages).reduce((sum, page) => sum + safeArray(page.tasks).length, 0),
+    [pageTaskPack?.pages],
   );
   const locatedFieldCount = useMemo(
     () => Object.values(fieldLocations).filter((location) => location.found).length,
@@ -208,6 +234,7 @@ function ProcurementTemplateDetailPage({ onNavigate }: ProcurementTemplateDetail
           <div className="procurement-template-reader-meta">
             <span>{visibleTasks.length} 个任务</span>
             <span>{locatedFieldCount}/{templateFields.length} 个锚点已定位</span>
+            <span>{safeArray(pageTaskPack?.pages).length || 0}/{pageTaskPack?.pageCount || 0} 页任务</span>
           </div>
         </header>
 
@@ -241,11 +268,23 @@ function ProcurementTemplateDetailPage({ onNavigate }: ProcurementTemplateDetail
                 <button type="button" className={fieldViewMode === 'all' ? 'is-active' : ''} onClick={() => setFieldViewMode('all')}>
                   全部
                 </button>
+                <button type="button" className={fieldViewMode === 'pageTasks' ? 'is-active' : ''} onClick={() => setFieldViewMode('pageTasks')}>
+                  页面任务
+                </button>
               </div>
             </div>
 
             <div className="procurement-template-reader-field-list">
-              {fieldViewMode === 'page' ? (
+              {fieldViewMode === 'pageTasks' ? (
+                <TemplateReaderPageTaskPanel
+                  pageTask={currentPageTask}
+                  pageCount={pageTaskPack?.pageCount || 0}
+                  generatedAt={pageTaskPack?.generatedAt || ''}
+                  generatedPageCount={safeArray(pageTaskPack?.pages).length}
+                  generatedTaskCount={generatedPageTaskCount}
+                  currentPage={currentPdfPage}
+                />
+              ) : fieldViewMode === 'page' ? (
                 currentPageTasks.length ? currentPageTasks.map((task) => (
                   <TemplateReaderTaskCard
                     key={task.key}
@@ -343,7 +382,76 @@ function TemplateReaderTaskCard({
   );
 }
 
+function TemplateReaderPageTaskPanel({
+  pageTask,
+  pageCount,
+  generatedAt,
+  generatedPageCount,
+  generatedTaskCount,
+  currentPage,
+}: {
+  pageTask?: ProcurementTemplatePageTask;
+  pageCount: number;
+  generatedAt: string;
+  generatedPageCount: number;
+  generatedTaskCount: number;
+  currentPage: number;
+}) {
+  const tasks = safeArray(pageTask?.tasks);
+  return (
+    <section className="procurement-template-reader-page-task-panel">
+      <div className="procurement-template-reader-page-task-summary">
+        <strong>页面任务核对</strong>
+        <span>
+          {generatedPageCount}/{pageCount || '-'} 页 · {generatedTaskCount} 个任务
+          {generatedAt ? ` · ${formatTime(generatedAt)}` : ''}
+        </span>
+      </div>
+      {pageTask ? (
+        <>
+          <div className="procurement-template-reader-page-task-title">
+            <strong>第 {pageTask.page || currentPage} 页：{pageTask.pageTitle || '未命名页面'}</strong>
+            <span>{tasks.length ? `${tasks.length} 个页面任务` : pageTask.noTaskReason || '本页无任务'}</span>
+          </div>
+          {tasks.length ? tasks.map((task) => (
+            <TemplateReaderPageTaskCard key={task.key} task={task} />
+          )) : (
+            <div className="procurement-empty-mini">{pageTask.noTaskReason || '当前页没有需要 AI 回填的页面任务'}</div>
+          )}
+        </>
+      ) : (
+        <div className="procurement-empty-mini">当前页还没有页面任务 JSON，请先生成 37 页页面任务包。</div>
+      )}
+    </section>
+  );
+}
+
+function TemplateReaderPageTaskCard({ task }: { task: ProcurementTemplatePageTaskItem }) {
+  const anchors = safeArray(task.anchors);
+  return (
+    <article className={`procurement-template-page-task-card${task.risk ? ' has-risk' : ''}`}>
+      <div>
+        <strong>{task.label}{task.required ? ' *' : ''}</strong>
+        <span className="procurement-template-reader-chip">{templateTaskTypeLabel(task.type)}</span>
+      </div>
+      <p>{task.prompt}</p>
+      <span>{task.key} · {task.group || '未分组'} · {anchors.length} 个锚点</span>
+      {anchors.length ? (
+        <ul>
+          {anchors.slice(0, 3).map((anchor, index) => (
+            <li key={`${task.key}-${index}`}>
+              <b>{anchor.matchText}</b>
+              <small>{anchor.sourceText}</small>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </article>
+  );
+}
+
 function templateTaskTypeLabel(type: string) {
+  if (type === 'calculated') return '计算题';
   if (type === 'compound') return '复合题';
   if (type === 'choice' || type === 'multiChoice') return '选择题';
   return '填空题';
