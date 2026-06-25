@@ -12274,6 +12274,72 @@ button {
   gap: 5px;
 }
 
+.procurement-ai-analysis-progress {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  background: #f6f9ff;
+  border: 1px solid rgba(30, 99, 214, 0.16);
+  border-radius: 10px;
+}
+
+.procurement-ai-analysis-progress > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.procurement-ai-analysis-progress strong {
+  color: #12305d;
+  font-size: 13px;
+}
+
+.procurement-ai-analysis-progress span,
+.procurement-ai-analysis-progress p {
+  margin: 0;
+  color: var(--yb-text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.procurement-ai-analysis-progress p {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.procurement-ai-analysis-bar {
+  overflow: hidden;
+  height: 6px;
+  background: rgba(30, 99, 214, 0.12);
+  border-radius: 999px;
+}
+
+.procurement-ai-analysis-bar i {
+  display: block;
+  height: 100%;
+  background: #1e63d6;
+  border-radius: inherit;
+  transition: width 180ms ease;
+}
+
+.procurement-ai-analysis-progress.is-done {
+  background: #f0fbf5;
+  border-color: rgba(8, 102, 74, 0.18);
+}
+
+.procurement-ai-analysis-progress.is-done .procurement-ai-analysis-bar i {
+  background: #0c9a6a;
+}
+
+.procurement-ai-analysis-progress.is-error {
+  background: #fff7f5;
+  border-color: rgba(210, 76, 52, 0.2);
+}
+
+.procurement-ai-analysis-progress.is-error .procurement-ai-analysis-bar i {
+  background: #d24c34;
+}
+
 .procurement-template-library-stats span {
   display: grid;
   min-height: 48px;

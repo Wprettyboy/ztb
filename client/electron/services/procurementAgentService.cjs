@@ -1993,6 +1993,23 @@ function createFieldsFromTaskPack(taskPack) {
   ));
 }
 
+async function runWithConcurrency(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  const workerCount = Math.max(1, Math.min(Number(concurrency) || 1, items.length || 1));
+
+  async function runNext() {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await worker(items[index], index);
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, () => runNext()));
+  return results;
+}
+
 function normalizeTaskPayload(payload) {
   const source = payload || {};
   return {
@@ -2019,6 +2036,30 @@ function applyTaskFromFields(task, fields) {
 }
 
 function createProcurementAgentService({ app, configStore, aiService }) {
+  const subscribers = new Set();
+
+  function subscribe(webContents) {
+    if (!webContents || webContents.isDestroyed()) return;
+    subscribers.add(webContents);
+    webContents.once('destroyed', () => subscribers.delete(webContents));
+  }
+
+  function emitEvent(event) {
+    for (const webContents of subscribers) {
+      if (!webContents.isDestroyed()) {
+        webContents.send('procurement-agent:event', event);
+      }
+    }
+  }
+
+  function emitAiAnalysisProgress(patch) {
+    emitEvent({
+      type: 'template-ai-analysis',
+      updatedAt: nowIso(),
+      ...patch,
+    });
+  }
+
   async function persist(state) {
     const nextState = ensureStateShape({
       ...state,
@@ -2501,6 +2542,7 @@ function createProcurementAgentService({ app, configStore, aiService }) {
   async function analyzeTemplateWithAi(payload = {}) {
     const state = await loadState();
     const templateId = normalizeString(payload?.templateId) || state.activeTemplateId;
+    const concurrency = Math.max(1, Math.min(Number(payload?.concurrency) || 1, 2));
     const template = state.templateLibrary.find((item) => item.id === templateId);
     if (!template) {
       return { success: false, message: '未找到要进行 AI 解析的模板', state };
@@ -2514,25 +2556,57 @@ function createProcurementAgentService({ app, configStore, aiService }) {
       return { success: false, message: '模板没有可供 AI 解析的原文块', state };
     }
 
-    const pageCount = Math.max(1, template.previewPageImages?.length || Math.ceil(blocks.length / 18));
+    const pageCount = Math.max(1, template.previewPageImages?.length || Math.ceil(blocks.length / 10));
     const pageSize = Math.max(1, Math.ceil(blocks.length / pageCount));
     const blocksWithPageHint = blocks.map((block, index) => ({
       ...block,
       pageHint: Math.min(pageCount, Math.floor(index / pageSize) + 1),
     }));
     const batches = [];
+    const maxBlocksPerBatch = 10;
     for (let page = 1; page <= pageCount; page += 1) {
       const pageBlocks = blocksWithPageHint.filter((block) => block.pageHint === page);
-      if (pageBlocks.length) batches.push(pageBlocks);
+      for (let start = 0; start < pageBlocks.length; start += maxBlocksPerBatch) {
+        const batch = pageBlocks.slice(start, start + maxBlocksPerBatch);
+        if (batch.length) batches.push(batch);
+      }
     }
 
-    const partialTasks = [];
-    for (const batch of batches) {
+    emitAiAnalysisProgress({
+      status: 'running',
+      templateId: template.id,
+      templateName: template.name,
+      totalBatches: batches.length,
+      completedBatches: 0,
+      failedBatches: 0,
+      generatedTasks: 0,
+      concurrency,
+      message: `开始 AI 解析，共 ${batches.length} 个批次`,
+    });
+
+    let completedBatches = 0;
+    let failedBatches = 0;
+    let generatedTasks = 0;
+
+    const batchResults = await runWithConcurrency(batches, concurrency, async (batch, index) => {
+      emitAiAnalysisProgress({
+        status: 'batch-running',
+        templateId: template.id,
+        templateName: template.name,
+        batchIndex: index + 1,
+        totalBatches: batches.length,
+        completedBatches,
+        failedBatches,
+        generatedTasks,
+        message: `正在解析第 ${index + 1}/${batches.length} 批，第 ${batch[0].pageHint} 页附近`,
+      });
       let aiPayload;
       try {
         aiPayload = await aiService.requestJson({
           messages: createAiTemplateAnalysisMessages({ template, blocks: batch, outline: scanResult.outline }),
           temperature: 0.1,
+          max_tokens: 900,
+          max_retries: 0,
           timeout_ms: 300000,
           schemaName: 'procurement_template_task_pack',
           progressLabel: `模板 AI 解析 第 ${batch[0].pageHint} 页`,
@@ -2546,12 +2620,38 @@ function createProcurementAgentService({ app, configStore, aiService }) {
         const hint = /fetch failed|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|Failed to fetch/i.test(reason)
           ? `无法连接本地文本模型服务：${baseUrl}。请先启动 C:\\llm\\gemma-4-31b-it\\start-server.ps1，确认 8088 端口可用后重试。`
           : `模板 AI 解析失败：${reason}`;
-        return { success: false, message: hint, state };
+        failedBatches += 1;
+        emitAiAnalysisProgress({
+          status: 'batch-error',
+          templateId: template.id,
+          templateName: template.name,
+          batchIndex: index + 1,
+          totalBatches: batches.length,
+          completedBatches,
+          failedBatches,
+          generatedTasks,
+          message: hint,
+        });
+        return { tasks: [], error: hint };
       }
-      if (Array.isArray(aiPayload?.tasks)) {
-        partialTasks.push(...aiPayload.tasks);
-      }
-    }
+      const tasks = Array.isArray(aiPayload?.tasks) ? aiPayload.tasks : [];
+      completedBatches += 1;
+      generatedTasks += tasks.length;
+      emitAiAnalysisProgress({
+        status: 'batch-done',
+        templateId: template.id,
+        templateName: template.name,
+        batchIndex: index + 1,
+        totalBatches: batches.length,
+        completedBatches,
+        failedBatches,
+        generatedTasks,
+        message: `第 ${index + 1}/${batches.length} 批完成，识别 ${tasks.length} 个任务`,
+      });
+      return { tasks };
+    });
+
+    const partialTasks = batchResults.flatMap((result) => result?.tasks || []);
 
     const aiTaskPack = normalizeAiTaskPack({
       template,
@@ -2560,6 +2660,16 @@ function createProcurementAgentService({ app, configStore, aiService }) {
       outline: scanResult.outline,
     });
     if (!aiTaskPack.tasks.length) {
+      emitAiAnalysisProgress({
+        status: 'error',
+        templateId: template.id,
+        templateName: template.name,
+        totalBatches: batches.length,
+        completedBatches,
+        failedBatches,
+        generatedTasks,
+        message: 'AI 没有识别出可用任务，请调整提示词或模板结构后重试',
+      });
       return { success: false, message: 'AI 没有识别出可用任务，请调整提示词或模板结构后重试', state };
     }
 
@@ -2592,11 +2702,22 @@ function createProcurementAgentService({ app, configStore, aiService }) {
       },
     }), `AI 已解析模板任务包：${template.fileName}，生成 ${savedTaskPack.tasks.length} 个任务`);
 
-    return {
+    const result = {
       success: true,
       message: `AI 解析完成，生成 ${savedTaskPack.tasks.length} 个任务`,
       state: await persist(nextState),
     };
+    emitAiAnalysisProgress({
+      status: 'success',
+      templateId: template.id,
+      templateName: template.name,
+      totalBatches: batches.length,
+      completedBatches,
+      failedBatches,
+      generatedTasks: savedTaskPack.tasks.length,
+      message: result.message,
+    });
+    return result;
   }
 
   async function selectTemplate(payload = {}) {
@@ -2704,6 +2825,7 @@ function createProcurementAgentService({ app, configStore, aiService }) {
   }
 
   return {
+    subscribe,
     loadState,
     saveTask,
     importTemplateDocument,

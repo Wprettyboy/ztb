@@ -1,6 +1,7 @@
 const { ipcMain } = require('electron');
 
 function registerProcurementAgentIpc({ procurementAgentService }) {
+  ipcMain.on('procurement-agent:subscribe', (event) => procurementAgentService.subscribe(event.sender));
   ipcMain.handle('procurement-agent:load-state', () => procurementAgentService.loadState());
   ipcMain.handle('procurement-agent:save-task', (_event, payload) => procurementAgentService.saveTask(payload));
   ipcMain.handle('procurement-agent:import-template-document', (_event, payload) => procurementAgentService.importTemplateDocument(payload));

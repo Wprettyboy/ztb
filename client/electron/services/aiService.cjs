@@ -673,6 +673,10 @@ function createChatRequestBody(config, request, options = {}) {
     body.response_format = request.response_format;
   }
 
+  if (request.max_tokens !== undefined) {
+    body.max_tokens = request.max_tokens;
+  }
+
   return body;
 }
 

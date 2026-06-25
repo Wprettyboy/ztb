@@ -38,6 +38,12 @@ const bridge = {
     acceptHighConfidence: (threshold) => ipcRenderer.invoke('procurement-agent:accept-high-confidence', threshold),
     readTemplatePdf: (payload) => ipcRenderer.invoke('procurement-agent:read-template-pdf', payload),
     analyzeTemplateWithAi: (payload) => ipcRenderer.invoke('procurement-agent:analyze-template-with-ai', payload),
+    onEvent: (callback) => {
+      ipcRenderer.send('procurement-agent:subscribe');
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('procurement-agent:event', listener);
+      return () => ipcRenderer.removeListener('procurement-agent:event', listener);
+    },
     selectTemplate: (payload) => ipcRenderer.invoke('procurement-agent:select-template', payload),
     deleteTemplate: (payload) => ipcRenderer.invoke('procurement-agent:delete-template', payload),
     clear: () => ipcRenderer.invoke('procurement-agent:clear'),
