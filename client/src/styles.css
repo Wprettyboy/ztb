@@ -12730,17 +12730,35 @@ button {
 
 .procurement-template-page-task-card {
   display: grid;
+  width: 100%;
   gap: 9px;
   padding: 13px;
   color: var(--yb-text);
+  text-align: left;
   background: #ffffff;
   border: 1px solid var(--yb-border-soft);
   border-radius: 12px;
 }
 
+.procurement-template-page-task-card:hover,
+.procurement-template-page-task-card.is-active {
+  background: #edf5ff;
+  border-color: rgba(33, 116, 253, 0.28);
+}
+
+.procurement-template-page-task-card.is-active {
+  box-shadow: inset 4px 0 0 #1d66d2;
+}
+
 .procurement-template-page-task-card.has-risk {
   background: #fff7e8;
   border-color: rgba(205, 129, 36, 0.24);
+}
+
+.procurement-template-page-task-card.has-risk:hover,
+.procurement-template-page-task-card.has-risk.is-active {
+  background: #fff4df;
+  border-color: rgba(205, 129, 36, 0.4);
 }
 
 .procurement-template-page-task-card > div:first-child {
@@ -13111,6 +13129,23 @@ button {
   background: rgba(37, 99, 235, 0.2);
   border-color: rgba(37, 99, 235, 0.9);
   box-shadow: 0 0 0 3px rgba(191, 219, 254, 0.72);
+}
+
+.procurement-page-task-overlay {
+  position: absolute;
+  min-width: 18px;
+  min-height: 12px;
+  pointer-events: none;
+  background: rgba(20, 184, 166, 0.22);
+  border: 2px solid rgba(13, 148, 136, 0.72);
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px rgba(204, 251, 241, 0.72);
+}
+
+.procurement-page-task-overlay.is-active {
+  background: rgba(37, 99, 235, 0.22);
+  border-color: rgba(29, 78, 216, 0.95);
+  box-shadow: 0 0 0 4px rgba(191, 219, 254, 0.78);
 }
 
 .procurement-template-field-card {

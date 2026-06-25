@@ -27,6 +27,15 @@ export interface TemplatePdfFieldLocation {
   matchIndex?: number;
 }
 
+export interface TemplatePdfPageTaskAnchorTarget {
+  id: string;
+  taskKey: string;
+  label: string;
+  page: number;
+  matchText: string;
+  sourceText: string;
+}
+
 interface OpenSourcePdfHighlighterPreviewProps {
   pdfUrl: string;
   templateId?: string;
@@ -35,6 +44,9 @@ interface OpenSourcePdfHighlighterPreviewProps {
   onSelectedFieldChange: (fieldId: string) => void;
   onFieldLocationsChange: (locations: Record<string, TemplatePdfFieldLocation>) => void;
   onPageChange: (page: number) => void;
+  pageTaskAnchors?: TemplatePdfPageTaskAnchorTarget[];
+  selectedPageTaskAnchorId?: string;
+  onPageTaskAnchorLocationsChange?: (locations: Record<string, TemplatePdfFieldLocation>) => void;
 }
 
 interface PdfOutlineNode {
@@ -55,10 +67,14 @@ interface OpenSourcePdfHighlighterBodyProps {
   hostRef: RefObject<HTMLDivElement | null>;
   fields: ProcurementTemplateField[];
   locations: Record<string, TemplatePdfFieldLocation>;
+  pageTaskAnchors: TemplatePdfPageTaskAnchorTarget[];
+  pageTaskAnchorLocations: Record<string, TemplatePdfFieldLocation>;
   detectedHighlightCount: number;
   selectedFieldId: string;
+  selectedPageTaskAnchorId: string;
   onSelectedFieldChange: (fieldId: string) => void;
   onLocationsChange: (locations: Record<string, TemplatePdfFieldLocation>) => void;
+  onPageTaskAnchorLocationsChange: (locations: Record<string, TemplatePdfFieldLocation>) => void;
   onPageChange: (page: number) => void;
 }
 
@@ -214,11 +230,35 @@ function findCandidateInPage(field: ProcurementTemplateField, pageIndex: PdfPage
   };
 }
 
-async function locateFields(pdfDocument: PDFDocumentProxy, fields: ProcurementTemplateField[]) {
+function findAnchorCandidateInPage(anchor: TemplatePdfPageTaskAnchorTarget, pageIndex: PdfPageTextIndex, candidate: string) {
+  const start = pageIndex.compactText.indexOf(candidate);
+  if (start < 0) return null;
+  const end = start + candidate.length;
+  const rects = pageIndex.entries
+    .filter((entry) => entry.end > start && entry.start < end)
+    .map((entry) => entry.rect);
+  if (!rects.length) return null;
+  const merged = mergeRects(rects);
+  return {
+    fieldId: anchor.id,
+    page: pageIndex.pageNumber,
+    rect: normalizeRect(merged, pageIndex.width, pageIndex.height),
+    found: true,
+    matchText: candidate,
+    matchIndex: start,
+  };
+}
+
+async function createPdfTextIndexes(pdfDocument: PDFDocumentProxy) {
   const pageIndexes: PdfPageTextIndex[] = [];
   for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
     pageIndexes.push(await createPageTextIndex(pdfDocument, pageNumber));
   }
+  return pageIndexes;
+}
+
+async function locateFields(pdfDocument: PDFDocumentProxy, fields: ProcurementTemplateField[]) {
+  const pageIndexes = await createPdfTextIndexes(pdfDocument);
 
   const locations: Record<string, TemplatePdfFieldLocation> = {};
   let nextSearchPage = 1;
@@ -250,6 +290,43 @@ async function locateFields(pdfDocument: PDFDocumentProxy, fields: ProcurementTe
         matchText: '',
       };
     }
+  });
+
+  return locations;
+}
+
+async function locatePageTaskAnchors(pdfDocument: PDFDocumentProxy, anchors: TemplatePdfPageTaskAnchorTarget[]) {
+  if (!anchors.length) return {};
+  const pageIndexes = await createPdfTextIndexes(pdfDocument);
+  const pageIndexByNumber = new Map(pageIndexes.map((pageIndex) => [pageIndex.pageNumber, pageIndex]));
+  const locations: Record<string, TemplatePdfFieldLocation> = {};
+
+  anchors.forEach((anchor) => {
+    const preferredPage = pageIndexByNumber.get(anchor.page);
+    const candidates = uniqueStrings([
+      anchor.sourceText,
+      anchor.matchText,
+      ...String(anchor.sourceText || '')
+        .split(/[。；;，,\n\r]/)
+        .map((part) => part.trim())
+        .filter((part) => part.length >= 2),
+    ]).sort((first, second) => second.length - first.length);
+    let location: TemplatePdfFieldLocation | null = null;
+    const searchPages = preferredPage ? [preferredPage] : pageIndexes;
+    for (const candidate of candidates) {
+      for (const pageIndex of searchPages) {
+        location = findAnchorCandidateInPage(anchor, pageIndex, candidate);
+        if (location) break;
+      }
+      if (location) break;
+    }
+    locations[anchor.id] = location || {
+      fieldId: anchor.id,
+      page: anchor.page || 0,
+      rect: null,
+      found: false,
+      matchText: '',
+    };
   });
 
   return locations;
@@ -348,15 +425,57 @@ function renderFieldOverlays(
   return true;
 }
 
+function renderPageTaskAnchorOverlays(
+  host: HTMLElement | null,
+  anchors: TemplatePdfPageTaskAnchorTarget[],
+  locations: Record<string, TemplatePdfFieldLocation>,
+  selectedAnchorId: string,
+) {
+  const { pdfViewer } = getOpenSourceViewer(host);
+  if (!pdfViewer) return false;
+
+  anchors.forEach((anchor) => {
+    const location = locations[anchor.id];
+    if (!location?.found || !location.rect) return;
+    const page = pdfViewer.querySelector(`[data-page-number="${location.page}"]`) as HTMLElement | null;
+    if (!page) return;
+
+    if (getComputedStyle(page).position === 'static') {
+      page.style.position = 'relative';
+    }
+
+    const layer = page.querySelector('.procurement-field-overlay-layer') || document.createElement('div');
+    layer.className = 'procurement-field-overlay-layer';
+    if (!layer.parentElement) {
+      page.appendChild(layer);
+    }
+
+    const marker = document.createElement('span');
+    marker.className = `procurement-page-task-overlay${anchor.id === selectedAnchorId ? ' is-active' : ''}`;
+    marker.title = anchor.label;
+    marker.style.left = `${location.rect.left * 100}%`;
+    marker.style.top = `${location.rect.top * 100}%`;
+    marker.style.width = `${location.rect.width * 100}%`;
+    marker.style.height = `${Math.max(location.rect.height * 100, 1.2)}%`;
+    layer.appendChild(marker);
+  });
+
+  return true;
+}
+
 function OpenSourcePdfHighlighterBody({
   pdfDocument,
   hostRef,
   fields,
   locations,
+  pageTaskAnchors,
+  pageTaskAnchorLocations,
   detectedHighlightCount,
   selectedFieldId,
+  selectedPageTaskAnchorId,
   onSelectedFieldChange,
   onLocationsChange,
+  onPageTaskAnchorLocationsChange,
   onPageChange,
 }: OpenSourcePdfHighlighterBodyProps) {
   const [outline, setOutline] = useState<PdfOutlineNode[]>([]);
@@ -416,6 +535,29 @@ function OpenSourcePdfHighlighterBody({
 
   useEffect(() => {
     let cancelled = false;
+    onPageTaskAnchorLocationsChange({});
+    void locatePageTaskAnchors(pdfDocument, pageTaskAnchors).then((nextLocations) => {
+      if (!cancelled) {
+        onPageTaskAnchorLocationsChange(nextLocations);
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        onPageTaskAnchorLocationsChange(Object.fromEntries(pageTaskAnchors.map((anchor) => [anchor.id, {
+          fieldId: anchor.id,
+          page: anchor.page,
+          rect: null,
+          found: false,
+          matchText: '',
+        }])));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [onPageTaskAnchorLocationsChange, pageTaskAnchors, pdfDocument]);
+
+  useEffect(() => {
+    let cancelled = false;
     void flattenPdfOutline(pdfDocument).then((nodes) => {
       if (cancelled) return;
       setOutline(nodes);
@@ -464,6 +606,7 @@ function OpenSourcePdfHighlighterBody({
       };
       updateCurrentPage();
       renderFieldOverlays(hostRef.current, fields, locations, selectedFieldId, onSelectedFieldChange);
+      renderPageTaskAnchorOverlays(hostRef.current, pageTaskAnchors, pageTaskAnchorLocations, selectedPageTaskAnchorId);
       container.addEventListener('scroll', updateCurrentPage, { passive: true });
       cleanup = () => container.removeEventListener('scroll', updateCurrentPage);
     }, delay));
@@ -471,14 +614,15 @@ function OpenSourcePdfHighlighterBody({
       timers.forEach((timer) => window.clearTimeout(timer));
       cleanup?.();
     };
-  }, [fields, hostRef, locations, onPageChange, onSelectedFieldChange, pdfDocument, selectedFieldId]);
+  }, [fields, hostRef, locations, onPageChange, onSelectedFieldChange, pageTaskAnchorLocations, pageTaskAnchors, pdfDocument, selectedFieldId, selectedPageTaskAnchorId]);
 
   useEffect(() => {
     const timers = [100, 500, 1200, 2200].map((delay) => window.setTimeout(() => {
       renderFieldOverlays(hostRef.current, fields, locations, selectedFieldId, onSelectedFieldChange);
+      renderPageTaskAnchorOverlays(hostRef.current, pageTaskAnchors, pageTaskAnchorLocations, selectedPageTaskAnchorId);
     }, delay));
     return () => timers.forEach((timer) => window.clearTimeout(timer));
-  }, [fields, hostRef, locations, onSelectedFieldChange, pdfDocument, selectedFieldId]);
+  }, [fields, hostRef, locations, onSelectedFieldChange, pageTaskAnchorLocations, pageTaskAnchors, pdfDocument, selectedFieldId, selectedPageTaskAnchorId]);
 
   useEffect(() => {
     const selectedLocation = selectedFieldId ? locations[selectedFieldId] : null;
@@ -488,6 +632,15 @@ function OpenSourcePdfHighlighterBody({
       pageInputRef.current.value = String(selectedLocation.page);
     }
   }, [locations, selectedFieldId]);
+
+  useEffect(() => {
+    const selectedLocation = selectedPageTaskAnchorId ? pageTaskAnchorLocations[selectedPageTaskAnchorId] : null;
+    if (!selectedLocation?.found) return;
+    setCurrentPage(selectedLocation.page);
+    if (pageInputRef.current) {
+      pageInputRef.current.value = String(selectedLocation.page);
+    }
+  }, [pageTaskAnchorLocations, selectedPageTaskAnchorId]);
 
   return (
     <div className="procurement-open-source-shell">
@@ -542,7 +695,7 @@ function OpenSourcePdfHighlighterBody({
             <button ref={jumpButtonRef} type="button" onClick={jumpToInputPage}>跳转</button>
           </div>
           <button type="button" onClick={() => scrollToPage(currentPage + 1)} disabled={currentPage >= pageCount}>下一页</button>
-          <span>{detectedHighlightCount} 个字段高亮</span>
+          <span>{detectedHighlightCount} 个字段高亮 · {Object.values(pageTaskAnchorLocations).filter((location) => location.found).length} 个页面任务锚点</span>
         </div>
         <div className="procurement-open-source-viewer">
           {viewerMounted ? (
@@ -573,15 +726,23 @@ export function OpenSourcePdfHighlighterPreview({
   onSelectedFieldChange,
   onFieldLocationsChange,
   onPageChange,
+  pageTaskAnchors = [],
+  selectedPageTaskAnchorId = '',
+  onPageTaskAnchorLocationsChange,
 }: OpenSourcePdfHighlighterPreviewProps) {
   const [loadableUrl, setLoadableUrl] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [locations, setLocations] = useState<Record<string, TemplatePdfFieldLocation>>({});
+  const [pageTaskAnchorLocations, setPageTaskAnchorLocations] = useState<Record<string, TemplatePdfFieldLocation>>({});
   const hostRef = useRef<HTMLDivElement | null>(null);
   const handleLocationsChange = useCallback((nextLocations: Record<string, TemplatePdfFieldLocation>) => {
     setLocations(nextLocations);
     onFieldLocationsChange(nextLocations);
   }, [onFieldLocationsChange]);
+  const handlePageTaskAnchorLocationsChange = useCallback((nextLocations: Record<string, TemplatePdfFieldLocation>) => {
+    setPageTaskAnchorLocations(nextLocations);
+    onPageTaskAnchorLocationsChange?.(nextLocations);
+  }, [onPageTaskAnchorLocationsChange]);
 
   const detectedHighlightCount = useMemo(() => fields
     .filter((field) => locations[field.id]?.found && locations[field.id]?.rect).length, [fields, locations]);
@@ -618,6 +779,8 @@ export function OpenSourcePdfHighlighterPreview({
   useEffect(() => {
     setLocations({});
     onFieldLocationsChange({});
+    setPageTaskAnchorLocations({});
+    onPageTaskAnchorLocationsChange?.({});
   }, [onFieldLocationsChange, pdfUrl, templateId]);
 
   useEffect(() => {
@@ -639,6 +802,27 @@ export function OpenSourcePdfHighlighterPreview({
     }, delay));
     return () => timers.forEach((timer) => window.clearTimeout(timer));
   }, [locations, onPageChange, selectedFieldId]);
+
+  useEffect(() => {
+    const selectedLocation = selectedPageTaskAnchorId ? pageTaskAnchorLocations[selectedPageTaskAnchorId] : null;
+    if (!selectedLocation?.found || !selectedLocation.rect) return undefined;
+    onPageChange(selectedLocation.page);
+
+    const scrollToLocation = () => {
+      const { pdfViewer, container } = getOpenSourceViewer(hostRef.current);
+      const page = pdfViewer?.querySelector(`[data-page-number="${selectedLocation.page}"]`) as HTMLElement | null;
+      if (!container || !page) return;
+      const top = Math.max(0, page.offsetTop + selectedLocation.rect!.top * page.clientHeight - 72);
+      container.scrollTo({ top, behavior: 'auto' });
+      container.scrollTop = top;
+      renderPageTaskAnchorOverlays(hostRef.current, pageTaskAnchors, pageTaskAnchorLocations, selectedPageTaskAnchorId);
+    };
+
+    const timers = [80, 500, 1200].map((delay) => window.setTimeout(() => {
+      scrollToLocation();
+    }, delay));
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, [onPageChange, pageTaskAnchorLocations, pageTaskAnchors, selectedPageTaskAnchorId]);
 
   if (errorMessage) {
     return <div className="procurement-empty-mini">{errorMessage}</div>;
@@ -665,10 +849,14 @@ export function OpenSourcePdfHighlighterPreview({
             hostRef={hostRef}
             fields={fields}
             locations={locations}
+            pageTaskAnchors={pageTaskAnchors}
+            pageTaskAnchorLocations={pageTaskAnchorLocations}
             detectedHighlightCount={detectedHighlightCount}
             selectedFieldId={selectedFieldId}
+            selectedPageTaskAnchorId={selectedPageTaskAnchorId}
             onSelectedFieldChange={onSelectedFieldChange}
             onLocationsChange={handleLocationsChange}
+            onPageTaskAnchorLocationsChange={handlePageTaskAnchorLocationsChange}
             onPageChange={onPageChange}
           />
         )}

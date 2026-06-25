@@ -2,7 +2,11 @@ import { Component, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { trackPageView } from '../../../shared/analytics/analytics';
 import { useToast } from '../../../shared/ui';
 import type { SectionId } from '../../../shared/types/navigation';
-import { OpenSourcePdfHighlighterPreview, type TemplatePdfFieldLocation } from '../components/OpenSourcePdfHighlighterPreview';
+import {
+  OpenSourcePdfHighlighterPreview,
+  type TemplatePdfFieldLocation,
+  type TemplatePdfPageTaskAnchorTarget,
+} from '../components/OpenSourcePdfHighlighterPreview';
 import type {
   ProcurementAgentState,
   ProcurementTemplateBlock,
@@ -125,7 +129,9 @@ function ProcurementTemplateDetailPage({ onNavigate }: ProcurementTemplateDetail
   const [state, setState] = useState<ProcurementAgentState | null>(null);
   const [pageTaskPack, setPageTaskPack] = useState<ProcurementTemplatePageTaskPack | null>(null);
   const [selectedFieldId, setSelectedFieldId] = useState('');
+  const [selectedPageTaskAnchorId, setSelectedPageTaskAnchorId] = useState('');
   const [fieldLocations, setFieldLocations] = useState<Record<string, TemplatePdfFieldLocation>>({});
+  const [pageTaskAnchorLocations, setPageTaskAnchorLocations] = useState<Record<string, TemplatePdfFieldLocation>>({});
   const [currentPdfPage, setCurrentPdfPage] = useState(1);
   const [fieldViewMode, setFieldViewMode] = useState<FieldViewMode>('all');
   const { showToast } = useToast();
@@ -171,6 +177,17 @@ function ProcurementTemplateDetailPage({ onNavigate }: ProcurementTemplateDetail
     },
   } : null, [activeTemplate?.name, state, visibleTasks]);
   const taskGroups = useMemo(() => taskState ? buildTemplateTaskGroups(taskState) : [], [taskState]);
+  const pageTaskAnchors = useMemo<TemplatePdfPageTaskAnchorTarget[]>(
+    () => safeArray(pageTaskPack?.pages).flatMap((page) => safeArray(page.tasks).flatMap((task) => safeArray(task.anchors).map((anchor, index) => ({
+      id: `${task.key}_anchor_${String(index + 1).padStart(3, '0')}`,
+      taskKey: task.key,
+      label: task.label,
+      page: anchor.pageHint || page.page,
+      matchText: anchor.matchText,
+      sourceText: anchor.sourceText,
+    })))),
+    [pageTaskPack?.pages],
+  );
   const currentPageTasks = useMemo(
     () => visibleTasks.filter((task) => safeArray(task.anchors).some((anchor) => fieldLocations[anchor.fieldId]?.page === currentPdfPage)),
     [currentPdfPage, fieldLocations, visibleTasks],
@@ -183,6 +200,10 @@ function ProcurementTemplateDetailPage({ onNavigate }: ProcurementTemplateDetail
     () => safeArray(pageTaskPack?.pages).reduce((sum, page) => sum + safeArray(page.tasks).length, 0),
     [pageTaskPack?.pages],
   );
+  const locatedPageTaskAnchorCount = useMemo(
+    () => Object.values(pageTaskAnchorLocations).filter((location) => location.found).length,
+    [pageTaskAnchorLocations],
+  );
   const locatedFieldCount = useMemo(
     () => Object.values(fieldLocations).filter((location) => location.found).length,
     [fieldLocations],
@@ -191,6 +212,13 @@ function ProcurementTemplateDetailPage({ onNavigate }: ProcurementTemplateDetail
     const anchors = safeArray(task.anchors);
     const locatedAnchor = anchors.find((anchor) => fieldLocations[anchor.fieldId]?.found);
     setSelectedFieldId((locatedAnchor || anchors[0])?.fieldId || '');
+  };
+  const selectPageTask = (task: ProcurementTemplatePageTaskItem) => {
+    const anchors = safeArray(task.anchors);
+    const anchorIds = anchors.map((_anchor, index) => `${task.key}_anchor_${String(index + 1).padStart(3, '0')}`);
+    const locatedAnchorId = anchorIds.find((anchorId) => pageTaskAnchorLocations[anchorId]?.found);
+    setSelectedFieldId('');
+    setSelectedPageTaskAnchorId(locatedAnchorId || anchorIds[0] || '');
   };
 
   useEffect(() => {
@@ -234,7 +262,7 @@ function ProcurementTemplateDetailPage({ onNavigate }: ProcurementTemplateDetail
           <div className="procurement-template-reader-meta">
             <span>{visibleTasks.length} 个任务</span>
             <span>{locatedFieldCount}/{templateFields.length} 个锚点已定位</span>
-            <span>{safeArray(pageTaskPack?.pages).length || 0}/{pageTaskPack?.pageCount || 0} 页任务</span>
+            <span>{safeArray(pageTaskPack?.pages).length || 0}/{pageTaskPack?.pageCount || 0} 页任务 · {locatedPageTaskAnchorCount} 个页面锚点</span>
           </div>
         </header>
 
@@ -249,6 +277,9 @@ function ProcurementTemplateDetailPage({ onNavigate }: ProcurementTemplateDetail
                 onSelectedFieldChange={setSelectedFieldId}
                 onFieldLocationsChange={setFieldLocations}
                 onPageChange={setCurrentPdfPage}
+                pageTaskAnchors={pageTaskAnchors}
+                selectedPageTaskAnchorId={selectedPageTaskAnchorId}
+                onPageTaskAnchorLocationsChange={setPageTaskAnchorLocations}
               />
             ) : (
               <div className="procurement-empty-mini">当前模板缺少 PDF 预览，请重新扫描模板</div>
@@ -283,6 +314,9 @@ function ProcurementTemplateDetailPage({ onNavigate }: ProcurementTemplateDetail
                   generatedPageCount={safeArray(pageTaskPack?.pages).length}
                   generatedTaskCount={generatedPageTaskCount}
                   currentPage={currentPdfPage}
+                  locations={pageTaskAnchorLocations}
+                  selectedAnchorId={selectedPageTaskAnchorId}
+                  onSelectTask={selectPageTask}
                 />
               ) : fieldViewMode === 'page' ? (
                 currentPageTasks.length ? currentPageTasks.map((task) => (
@@ -389,6 +423,9 @@ function TemplateReaderPageTaskPanel({
   generatedPageCount,
   generatedTaskCount,
   currentPage,
+  locations,
+  selectedAnchorId,
+  onSelectTask,
 }: {
   pageTask?: ProcurementTemplatePageTask;
   pageCount: number;
@@ -396,6 +433,9 @@ function TemplateReaderPageTaskPanel({
   generatedPageCount: number;
   generatedTaskCount: number;
   currentPage: number;
+  locations: Record<string, TemplatePdfFieldLocation>;
+  selectedAnchorId: string;
+  onSelectTask: (task: ProcurementTemplatePageTaskItem) => void;
 }) {
   const tasks = safeArray(pageTask?.tasks);
   return (
@@ -414,7 +454,13 @@ function TemplateReaderPageTaskPanel({
             <span>{tasks.length ? `${tasks.length} 个页面任务` : pageTask.noTaskReason || '本页无任务'}</span>
           </div>
           {tasks.length ? tasks.map((task) => (
-            <TemplateReaderPageTaskCard key={task.key} task={task} />
+            <TemplateReaderPageTaskCard
+              key={task.key}
+              task={task}
+              locations={locations}
+              active={safeArray(task.anchors).some((_anchor, index) => `${task.key}_anchor_${String(index + 1).padStart(3, '0')}` === selectedAnchorId)}
+              onClick={() => onSelectTask(task)}
+            />
           )) : (
             <div className="procurement-empty-mini">{pageTask.noTaskReason || '当前页没有需要 AI 回填的页面任务'}</div>
           )}
@@ -426,16 +472,34 @@ function TemplateReaderPageTaskPanel({
   );
 }
 
-function TemplateReaderPageTaskCard({ task }: { task: ProcurementTemplatePageTaskItem }) {
+function TemplateReaderPageTaskCard({
+  task,
+  locations,
+  active,
+  onClick,
+}: {
+  task: ProcurementTemplatePageTaskItem;
+  locations: Record<string, TemplatePdfFieldLocation>;
+  active: boolean;
+  onClick: () => void;
+}) {
   const anchors = safeArray(task.anchors);
+  const locatedCount = anchors.filter((_anchor, index) => {
+    const anchorId = `${task.key}_anchor_${String(index + 1).padStart(3, '0')}`;
+    return locations[anchorId]?.found;
+  }).length;
   return (
-    <article className={`procurement-template-page-task-card${task.risk ? ' has-risk' : ''}`}>
+    <button
+      type="button"
+      className={`procurement-template-page-task-card${task.risk ? ' has-risk' : ''}${active ? ' is-active' : ''}`}
+      onClick={onClick}
+    >
       <div>
         <strong>{task.label}{task.required ? ' *' : ''}</strong>
         <span className="procurement-template-reader-chip">{templateTaskTypeLabel(task.type)}</span>
       </div>
       <p>{task.prompt}</p>
-      <span>{task.key} · {task.group || '未分组'} · {anchors.length} 个锚点</span>
+      <span>{task.key} · {task.group || '未分组'} · {locatedCount}/{anchors.length} 个锚点已定位</span>
       {anchors.length ? (
         <ul>
           {anchors.slice(0, 3).map((anchor, index) => (
@@ -446,7 +510,7 @@ function TemplateReaderPageTaskCard({ task }: { task: ProcurementTemplatePageTas
           ))}
         </ul>
       ) : null}
-    </article>
+    </button>
   );
 }
 
