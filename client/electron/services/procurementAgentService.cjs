@@ -2065,9 +2065,62 @@ function createProcurementAgentService({ app, configStore, aiService }) {
     });
   }
 
+  function estimateStreamTokens(text) {
+    const value = String(text || '');
+    if (!value) return 0;
+    const cjkCount = (value.match(/[\u3400-\u9fff]/g) || []).length;
+    const otherCount = Math.max(0, value.length - cjkCount);
+    return Math.max(1, Math.round(cjkCount + otherCount / 4));
+  }
+
   function createStreamEmitter(template, batchIndex, totalBatches) {
     let buffer = '';
+    let outputText = '';
     let lastFlushAt = 0;
+    let firstTokenAt = 0;
+    let lastModelStats = null;
+    let finished = false;
+    const startedAt = Date.now();
+
+    function buildStats(now = Date.now()) {
+      const elapsedMs = Math.max(0, now - startedAt);
+      const charCount = outputText.length;
+      const estimatedTokens = estimateStreamTokens(outputText);
+      const activeMs = firstTokenAt ? Math.max(1, now - firstTokenAt) : 0;
+      const tokensPerSecond = firstTokenAt ? estimatedTokens / (activeMs / 1000) : 0;
+      const overallTokensPerSecond = elapsedMs ? estimatedTokens / (elapsedMs / 1000) : 0;
+      const timing = lastModelStats?.timing || {};
+      return {
+        elapsedMs,
+        timeToFirstTokenMs: firstTokenAt ? firstTokenAt - startedAt : elapsedMs,
+        waitingForFirstToken: !firstTokenAt,
+        charCount,
+        estimatedTokens,
+        tokensPerSecond,
+        overallTokensPerSecond,
+        secondsPerToken: tokensPerSecond ? 1 / tokensPerSecond : 0,
+        modelTokensPerSecond: Number(timing.completionTokensPerSecond || 0),
+        modelSecondsPerToken: Number(timing.secondsPerToken || 0),
+        promptTokens: Number(timing.promptTokens || 0),
+        completionTokens: Number(timing.completionTokens || 0),
+        promptMs: Number(timing.promptMs || 0),
+        completionMs: Number(timing.completionMs || 0),
+      };
+    }
+
+    function emitStreamEvent(status, delta = '') {
+      emitEvent({
+        type: 'template-ai-analysis-stream',
+        status,
+        templateId: template.id,
+        templateName: template.name,
+        batchIndex,
+        totalBatches,
+        delta,
+        stats: buildStats(),
+        updatedAt: nowIso(),
+      });
+    }
 
     function flush(force = false) {
       const now = Date.now();
@@ -2075,24 +2128,43 @@ function createProcurementAgentService({ app, configStore, aiService }) {
       const delta = buffer;
       buffer = '';
       lastFlushAt = now;
-      emitEvent({
-        type: 'template-ai-analysis-stream',
-        status: 'streaming',
-        templateId: template.id,
-        templateName: template.name,
-        batchIndex,
-        totalBatches,
-        delta,
-        updatedAt: nowIso(),
-      });
+      emitStreamEvent('streaming', delta);
     }
+
+    const timer = setInterval(() => {
+      if (finished) return;
+      flush(true);
+      if (!buffer) {
+        emitStreamEvent(firstTokenAt ? 'streaming' : 'stream-waiting');
+      }
+    }, 1000);
+    timer.unref?.();
 
     return {
       push(delta) {
-        buffer += String(delta || '');
+        const text = String(delta || '');
+        if (!text) return;
+        if (!firstTokenAt) {
+          firstTokenAt = Date.now();
+        }
+        outputText += text;
+        buffer += text;
         flush(false);
       },
+      pushStats(stats) {
+        lastModelStats = stats || null;
+        emitStreamEvent('stream-stats');
+      },
+      mark(message) {
+        emitStreamEvent(firstTokenAt ? 'streaming' : 'stream-waiting', message);
+      },
       flush,
+      finish() {
+        finished = true;
+        flush(true);
+        emitStreamEvent('stream-finished');
+        clearInterval(timer);
+      },
     };
   }
 
@@ -2638,16 +2710,7 @@ function createProcurementAgentService({ app, configStore, aiService }) {
         generatedTasks,
         message: `正在解析第 ${batchIndex}/${batches.length} 批，第 ${batch[0].pageHint} 页附近`,
       });
-      emitEvent({
-        type: 'template-ai-analysis-stream',
-        status: 'stream-waiting',
-        templateId: template.id,
-        templateName: template.name,
-        batchIndex,
-        totalBatches: batches.length,
-        delta: `\n[第 ${batchIndex}/${batches.length} 批已发送到本地模型，等待流式输出...]\n`,
-        updatedAt: nowIso(),
-      });
+      streamEmitter.mark(`\n[第 ${batchIndex}/${batches.length} 批已发送到本地模型，等待首个Token...]\n`);
       let aiPayload;
       try {
         aiPayload = await aiService.requestJson({
@@ -2661,10 +2724,11 @@ function createProcurementAgentService({ app, configStore, aiService }) {
           failureMessage: '模型返回的模板任务 JSON 无效',
           logTitle: '模板 AI 任务解析',
           streamCallback: (delta) => streamEmitter.push(delta),
+          streamStatsCallback: (stats) => streamEmitter.pushStats(stats),
         });
-        streamEmitter.flush(true);
+        streamEmitter.finish();
       } catch (error) {
-        streamEmitter.flush(true);
+        streamEmitter.finish();
         const config = configStore.load();
         const baseUrl = normalizeString(config.base_url || 'http://127.0.0.1:8088/v1');
         const reason = error?.message || '未知错误';

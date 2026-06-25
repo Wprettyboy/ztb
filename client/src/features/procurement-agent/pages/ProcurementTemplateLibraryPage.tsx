@@ -87,6 +87,23 @@ interface ProcurementAiAnalysisLog {
   updatedAt: string;
 }
 
+interface ProcurementAiAnalysisStreamStats {
+  elapsedMs?: number;
+  timeToFirstTokenMs?: number;
+  waitingForFirstToken?: boolean;
+  charCount?: number;
+  estimatedTokens?: number;
+  tokensPerSecond?: number;
+  overallTokensPerSecond?: number;
+  secondsPerToken?: number;
+  modelTokensPerSecond?: number;
+  modelSecondsPerToken?: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  promptMs?: number;
+  completionMs?: number;
+}
+
 interface ProcurementAiAnalysisStreamEvent {
   type: 'template-ai-analysis-stream';
   status: string;
@@ -95,6 +112,7 @@ interface ProcurementAiAnalysisStreamEvent {
   batchIndex?: number;
   totalBatches?: number;
   delta?: string;
+  stats?: ProcurementAiAnalysisStreamStats;
   updatedAt?: string;
 }
 
@@ -131,7 +149,8 @@ function ProcurementTemplateLibraryPage({ onNavigate }: ProcurementTemplateLibra
   const [aiAnalysisEvent, setAiAnalysisEvent] = useState<ProcurementAiAnalysisEvent | null>(null);
   const [aiAnalysisLogs, setAiAnalysisLogs] = useState<ProcurementAiAnalysisLog[]>([]);
   const [aiStreamText, setAiStreamText] = useState('');
-  const [aiStreamMeta, setAiStreamMeta] = useState<{ batchIndex?: number; totalBatches?: number; updatedAt?: string }>({});
+  const [aiStreamMeta, setAiStreamMeta] = useState<{ batchIndex?: number; totalBatches?: number; status?: string; updatedAt?: string }>({});
+  const [aiStreamStats, setAiStreamStats] = useState<ProcurementAiAnalysisStreamStats>({});
   const backendAvailable = Boolean(window.yibiao?.procurementAgent);
   const { showToast } = useToast();
   const templates = useMemo(
@@ -153,8 +172,10 @@ function ProcurementTemplateLibraryPage({ onNavigate }: ProcurementTemplateLibra
         setAiStreamMeta({
           batchIndex: streamEvent.batchIndex,
           totalBatches: streamEvent.totalBatches,
+          status: streamEvent.status,
           updatedAt: streamEvent.updatedAt,
         });
+        setAiStreamStats(streamEvent.stats || {});
         setAiStreamText((prev) => `${prev}${streamEvent.delta || ''}`.slice(-6000));
         return;
       }
@@ -176,6 +197,7 @@ function ProcurementTemplateLibraryPage({ onNavigate }: ProcurementTemplateLibra
       }
       if (nextEvent.status === 'batch-running') {
         setAiStreamText('');
+        setAiStreamStats({});
       }
     });
   }, []);
@@ -216,6 +238,7 @@ function ProcurementTemplateLibraryPage({ onNavigate }: ProcurementTemplateLibra
       setLoading(true);
       setAiStreamText('');
       setAiStreamMeta({});
+      setAiStreamStats({});
       setAiAnalysisLogs([{
         id: `starting-${Date.now()}`,
         status: 'starting',
@@ -325,6 +348,7 @@ function ProcurementTemplateLibraryPage({ onNavigate }: ProcurementTemplateLibra
               logs={aiAnalysisLogs}
               streamText={aiStreamText}
               streamMeta={aiStreamMeta}
+              streamStats={aiStreamStats}
               onOpenPreview={() => void openAiAnalysisPreview()}
             />
           )}
@@ -389,17 +413,41 @@ function formatTime(value: string) {
   return date.toLocaleString('zh-CN', { hour12: false });
 }
 
+function formatDurationMs(value?: number) {
+  const ms = Number(value || 0);
+  if (!Number.isFinite(ms) || ms <= 0) return '-';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  const minutes = Math.floor(ms / 60000);
+  const seconds = Math.round((ms % 60000) / 1000);
+  return `${minutes}m${seconds}s`;
+}
+
+function formatRate(value?: number) {
+  const rate = Number(value || 0);
+  if (!Number.isFinite(rate) || rate <= 0) return '-';
+  return rate >= 10 ? rate.toFixed(1) : rate.toFixed(2);
+}
+
+function formatSecondsPerToken(value?: number) {
+  const seconds = Number(value || 0);
+  if (!Number.isFinite(seconds) || seconds <= 0) return '-';
+  return seconds >= 1 ? `${seconds.toFixed(2)}s` : `${Math.round(seconds * 1000)}ms`;
+}
+
 function AiAnalysisWorkbench({
   event,
   logs,
   streamText,
   streamMeta,
+  streamStats,
   onOpenPreview,
 }: {
   event: ProcurementAiAnalysisEvent;
   logs: ProcurementAiAnalysisLog[];
   streamText: string;
-  streamMeta: { batchIndex?: number; totalBatches?: number; updatedAt?: string };
+  streamMeta: { batchIndex?: number; totalBatches?: number; status?: string; updatedAt?: string };
+  streamStats: ProcurementAiAnalysisStreamStats;
   onOpenPreview: () => void;
 }) {
   const total = Math.max(0, Number(event.totalBatches || 0));
@@ -427,6 +475,14 @@ function AiAnalysisWorkbench({
           <span><strong>{total ? `${completed + failed}/${total}` : '-'}</strong>批次</span>
           <span><strong>{Number(event.generatedTasks || 0)}</strong>任务</span>
           <span><strong>{failed}</strong>失败</span>
+          <span><strong>{formatDurationMs(streamStats.elapsedMs)}</strong>当前批耗时</span>
+          <span><strong>{formatDurationMs(streamStats.timeToFirstTokenMs)}</strong>{streamStats.waitingForFirstToken ? '等待首Token' : '首Token耗时'}</span>
+          <span><strong>{formatRate(streamStats.tokensPerSecond)}</strong>估算Token/s</span>
+          <span><strong>{formatSecondsPerToken(streamStats.secondsPerToken)}</strong>估算秒/Token</span>
+          <span><strong>{formatRate(streamStats.modelTokensPerSecond)}</strong>模型Token/s</span>
+          <span><strong>{formatSecondsPerToken(streamStats.modelSecondsPerToken)}</strong>模型秒/Token</span>
+          <span><strong>{Number(streamStats.estimatedTokens || 0)}</strong>估算Token</span>
+          <span><strong>{Number(streamStats.charCount || 0)}</strong>输出字符</span>
         </div>
         {isDone && (
           <button type="button" className="procurement-primary-button" onClick={onOpenPreview}>
@@ -450,7 +506,14 @@ function AiAnalysisWorkbench({
           <strong>流式输出</strong>
           <span>
             {streamMeta.batchIndex ? `第 ${streamMeta.batchIndex}/${streamMeta.totalBatches || '-'} 批` : '等待模型输出'}
+            {streamMeta.status ? ` · ${streamMeta.status}` : ''}
           </span>
+        </div>
+        <div className="procurement-ai-analysis-stream-stats">
+          <span>当前批耗时 {formatDurationMs(streamStats.elapsedMs)}</span>
+          <span>{streamStats.waitingForFirstToken ? '等待首Token' : '首Token'} {formatDurationMs(streamStats.timeToFirstTokenMs)}</span>
+          <span>估算 {formatRate(streamStats.tokensPerSecond)} Token/s</span>
+          <span>模型 {formatRate(streamStats.modelTokensPerSecond)} Token/s</span>
         </div>
         <pre>{streamText || '模型输出会实时显示在这里。'}</pre>
       </div>

@@ -12342,7 +12342,7 @@ button {
 
 .procurement-ai-analysis-metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(98px, 1fr));
   gap: 8px;
 }
 
@@ -12416,6 +12416,24 @@ button {
 .procurement-ai-analysis-stream span {
   color: #9fb0cc;
   font-size: 12px;
+}
+
+.procurement-ai-analysis-stream-stats {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.procurement-ai-analysis-stream-stats span {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  padding: 3px 8px;
+  color: #cbd8ef;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
 }
 
 .procurement-ai-analysis-stream pre {

@@ -616,9 +616,12 @@ async function collectJsonResponseWithConfig(app, config, request) {
       messages: request.messages,
       temperature,
       response_format: responseFormat,
+      max_tokens: request.max_tokens,
       timeout_ms: request.timeout_ms,
       timeout_message: request.timeout_message,
       logTitle,
+      streamCallback: request.streamCallback,
+      streamStatsCallback: request.streamStatsCallback,
     });
 
     try {
@@ -757,6 +760,45 @@ function appendStreamChoiceContent(choice, contentParts, onDelta) {
   onDelta?.(content);
 }
 
+function normalizeStreamTiming(payload) {
+  const timings = payload?.timings || payload?.timing || null;
+  const usage = payload?.usage ? normalizeTokenUsage(payload.usage) : null;
+  if (!timings && !usage) {
+    return null;
+  }
+
+  const promptTokens = normalizeTokenNumber(
+    timings?.prompt_n
+    ?? timings?.prompt_tokens
+    ?? timings?.promptTokens
+    ?? usage?.prompt_tokens,
+  );
+  const completionTokens = normalizeTokenNumber(
+    timings?.predicted_n
+    ?? timings?.completion_tokens
+    ?? timings?.completionTokens
+    ?? usage?.completion_tokens,
+  );
+  const totalTokens = normalizeTokenNumber(usage?.total_tokens) || promptTokens + completionTokens;
+  const promptMs = Number(timings?.prompt_ms ?? timings?.promptMilliseconds ?? 0) || 0;
+  const completionMs = Number(timings?.predicted_ms ?? timings?.completion_ms ?? timings?.completionMilliseconds ?? 0) || 0;
+  const promptTokensPerSecond = Number(timings?.prompt_per_second ?? timings?.promptTokensPerSecond ?? 0) || 0;
+  const completionTokensPerSecond = Number(timings?.predicted_per_second ?? timings?.completion_tokens_per_second ?? timings?.completionTokensPerSecond ?? 0) || 0;
+  const completionMsPerToken = Number(timings?.predicted_per_token_ms ?? timings?.completion_ms_per_token ?? 0) || 0;
+
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    promptMs,
+    completionMs,
+    promptTokensPerSecond,
+    completionTokensPerSecond,
+    secondsPerToken: completionMsPerToken ? completionMsPerToken / 1000 : 0,
+    raw: timings || null,
+  };
+}
+
 function normalizeStreamPayloadError(error, fallbackMessage) {
   if (!error) {
     return fallbackMessage;
@@ -840,7 +882,7 @@ async function readSseJsonStream(response, options = {}) {
 }
 
 async function readOpenAIChatStream(response, options = {}) {
-  const state = { usage: null, contentParts: [] };
+  const state = { usage: null, timing: null, contentParts: [] };
 
   await readSseJsonStream(response, {
     unreadableMessage: 'AI 流式响应不可读',
@@ -851,8 +893,21 @@ async function readOpenAIChatStream(response, options = {}) {
         state.usage = payload.usage;
       }
 
+      const timing = normalizeStreamTiming(payload);
+      if (timing) {
+        state.timing = timing;
+        options.onStats?.({
+          timing,
+          usage: state.usage ? normalizeTokenUsage(state.usage) : null,
+        });
+      }
+
       const choices = Array.isArray(payload?.choices) ? payload.choices : [];
-      choices.forEach((choice) => appendStreamChoiceContent(choice, state.contentParts, options.onDelta));
+      choices.forEach((choice) => appendStreamChoiceContent(
+        choice,
+        state.contentParts,
+        (content) => options.onDelta?.(content),
+      ));
     },
   });
 
@@ -864,6 +919,7 @@ async function readOpenAIChatStream(response, options = {}) {
       stream: true,
       choices: [{ message: { content } }],
       usage: state.usage,
+      timings: state.timing,
     },
   };
 }
@@ -882,7 +938,7 @@ async function requestTextAiNormal(app, config, requestBody, options = {}) {
 async function requestTextAiStream(app, config, requestBody, options = {}) {
   const response = await fetchChatCompletion(app, config, requestBody, { signal: options.signal });
   await ensureTextAiResponseOk(response, 'AI 请求失败');
-  return readOpenAIChatStream(response, { onDelta: options.onDelta });
+  return readOpenAIChatStream(response, { onDelta: options.onDelta, onStats: options.onStats });
 }
 
 async function requestTextAi(app, config, requestBody, options = {}) {
@@ -1132,14 +1188,24 @@ async function chatWithConfig(app, config, request) {
     });
     let result = null;
     try {
-      result = await timeout.run(requestTextAi(app, config, requestBody, { signal: timeout.signal, requestMode, onDelta: request.streamCallback }));
+      result = await timeout.run(requestTextAi(app, config, requestBody, {
+        signal: timeout.signal,
+        requestMode,
+        onDelta: request.streamCallback,
+        onStats: request.streamStatsCallback,
+      }));
     } catch (error) {
       if (!request.response_format || !error.responseFormatUnsupported) {
         throw error;
       }
 
       requestBody = createChatRequestBody(config, request, { omitResponseFormat: true, stream: requestMode === 'stream' });
-      result = await timeout.run(requestTextAi(app, config, requestBody, { signal: timeout.signal, requestMode, onDelta: request.streamCallback }));
+      result = await timeout.run(requestTextAi(app, config, requestBody, {
+        signal: timeout.signal,
+        requestMode,
+        onDelta: request.streamCallback,
+        onStats: request.streamStatsCallback,
+      }));
     }
 
     responseData = result.responseData;
