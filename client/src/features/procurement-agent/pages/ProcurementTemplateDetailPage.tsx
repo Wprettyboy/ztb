@@ -116,7 +116,7 @@ function ProcurementTemplateDetailPage({ onNavigate }: ProcurementTemplateDetail
   const [selectedFieldId, setSelectedFieldId] = useState('');
   const [fieldLocations, setFieldLocations] = useState<Record<string, TemplatePdfFieldLocation>>({});
   const [currentPdfPage, setCurrentPdfPage] = useState(1);
-  const [fieldViewMode, setFieldViewMode] = useState<FieldViewMode>('page');
+  const [fieldViewMode, setFieldViewMode] = useState<FieldViewMode>('all');
   const { showToast } = useToast();
 
   useEffect(() => {
@@ -161,6 +161,11 @@ function ProcurementTemplateDetailPage({ onNavigate }: ProcurementTemplateDetail
     () => Object.values(fieldLocations).filter((location) => location.found).length,
     [fieldLocations],
   );
+  const selectTask = (task: ProcurementTemplateTaskDefinition) => {
+    const anchors = safeArray(task.anchors);
+    const locatedAnchor = anchors.find((anchor) => fieldLocations[anchor.fieldId]?.found);
+    setSelectedFieldId((locatedAnchor || anchors[0])?.fieldId || '');
+  };
 
   useEffect(() => {
     if (!visibleTasks.length) {
@@ -248,7 +253,7 @@ function ProcurementTemplateDetailPage({ onNavigate }: ProcurementTemplateDetail
                     template={activeTemplate}
                     locations={fieldLocations}
                     active={safeArray(task.anchors).some((anchor) => anchor.fieldId === selectedFieldId)}
-                    onClick={() => setSelectedFieldId(safeArray(task.anchors)[0]?.fieldId || '')}
+                    onClick={() => selectTask(task)}
                   />
                 )) : <div className="procurement-empty-mini">当前页暂无已定位字段</div>
               ) : (
@@ -265,7 +270,7 @@ function ProcurementTemplateDetailPage({ onNavigate }: ProcurementTemplateDetail
                         template={activeTemplate}
                         locations={fieldLocations}
                         active={safeArray(task.anchors).some((anchor) => anchor.fieldId === selectedFieldId)}
-                        onClick={() => setSelectedFieldId(safeArray(task.anchors)[0]?.fieldId || '')}
+                        onClick={() => selectTask(task)}
                       />
                     ))}
                   </section>

@@ -564,13 +564,42 @@ async function readTemplateTaskPack(app, template) {
   }
 }
 
-function createTemplateQuestions() {
-  return TEMPLATE_QUESTIONS.map((question, index) => ({
-    order: index + 1,
-    required: false,
-    risk: false,
-    options: [],
-    ...question,
+function createTemplateQuestions(sourceTasks = []) {
+  const tasks = Array.isArray(sourceTasks) ? sourceTasks.filter((task) => task?.key) : [];
+  if (tasks.length) {
+    return tasks
+      .map((task, index) => ({
+        id: task.key,
+        fieldKey: task.key,
+        label: task.label || task.key,
+        group: task.group || '模板任务',
+        chapter: task.chapter || '未归类章节',
+        type: task.type || 'blank',
+        inputKind: task.inputKind || inferInputKind(task.type || 'blank'),
+        required: Boolean(task.required),
+        risk: Boolean(task.risk),
+        order: Number(task.order || (index + 1) * 10),
+        options: Array.isArray(task.options) ? task.options : [],
+        targetText: task.prompt || task.label || task.key,
+        placeholder: task.placeholder || task.label || task.key,
+      }))
+      .sort((first, second) => Number(first.order || 0) - Number(second.order || 0));
+  }
+
+  return TEMPLATE_FIELD_RULES.map((rule, index) => ({
+    id: rule.key,
+    fieldKey: rule.key,
+    label: rule.label || rule.key,
+    group: inferTaskGroup(rule, ''),
+    chapter: '未加载模板',
+    type: rule.type || 'blank',
+    inputKind: inferInputKind(rule.type || 'blank'),
+    required: Boolean(rule.required),
+    risk: Boolean(rule.risk),
+    order: TEMPLATE_TASK_ORDER.get(rule.key) || (index + 1) * 10,
+    options: Array.isArray(rule.options) ? rule.options : [],
+    targetText: createTaskPrompt(rule),
+    placeholder: rule.label || rule.key,
   }));
 }
 
@@ -630,7 +659,8 @@ function createEmptyState() {
 }
 
 function createMissingFields() {
-  return answersToFields(createMissingAnswers(createTemplateQuestions()), createTemplateQuestions());
+  const questions = createTemplateQuestions();
+  return answersToFields(createMissingAnswers(questions), questions);
 }
 
 function getProcurementDir(app) {
@@ -1660,11 +1690,14 @@ function normalizeExistingAnswers(answers, questions, sourceBlocks) {
   });
 }
 
-function normalizeExtractedAnswers(payload, markdown, sourceBlocks) {
+function createStateQuestions(state) {
+  return createTemplateQuestions(state?.templateTaskPack?.tasks);
+}
+
+function normalizeExtractedAnswers(payload, markdown, sourceBlocks, questions = createTemplateQuestions()) {
   const aiAnswers = indexAiAnswers(payload);
   const aiFields = indexAiFields(payload);
   const heuristic = heuristicFields(markdown);
-  const questions = createTemplateQuestions();
 
   return questions.map((question) => {
     const aiAnswer = aiAnswers.get(question.id) || aiFields.get(question.fieldKey) || {};
@@ -1683,7 +1716,12 @@ function normalizeExtractedAnswers(payload, markdown, sourceBlocks) {
 
 function ensureStateShape(state) {
   const empty = createEmptyState();
-  const questions = createTemplateQuestions();
+  const templateTaskPack = {
+    ...createEmptyTemplateTaskPack(state?.activeTemplateId || '', state?.task?.templateName || ''),
+    ...(state?.templateTaskPack || {}),
+    tasks: Array.isArray(state?.templateTaskPack?.tasks) ? state.templateTaskPack.tasks : [],
+  };
+  const questions = createTemplateQuestions(templateTaskPack.tasks);
   const sourceBlocks = Array.isArray(state?.sourceBlocks) ? state.sourceBlocks : [];
   const answers = Array.isArray(state?.answers) && state.answers.length
     ? normalizeExistingAnswers(state.answers, questions, sourceBlocks)
@@ -1703,11 +1741,7 @@ function ensureStateShape(state) {
     templateOutline: Array.isArray(state?.templateOutline) ? state.templateOutline : [],
     templateBlocks: Array.isArray(state?.templateBlocks) ? state.templateBlocks : [],
     templateFields: Array.isArray(state?.templateFields) ? state.templateFields : [],
-    templateTaskPack: {
-      ...createEmptyTemplateTaskPack(state?.activeTemplateId || '', state?.task?.templateName || ''),
-      ...(state?.templateTaskPack || {}),
-      tasks: Array.isArray(state?.templateTaskPack?.tasks) ? state.templateTaskPack.tasks : [],
-    },
+    templateTaskPack,
     templateScan: {
       ...empty.templateScan,
       ...(state?.templateScan || {}),
@@ -1740,8 +1774,8 @@ function computeExtractionSummary(fields, status = 'extracted', message = '') {
   };
 }
 
-function buildExtractionMessages(markdown, task, sourceBlocks) {
-  const questions = createTemplateQuestions().map((question) => ({
+function buildExtractionMessages(markdown, task, sourceBlocks, questions = createTemplateQuestions()) {
+  const questionPayload = questions.map((question) => ({
     questionId: question.id,
     label: question.label,
     chapter: question.chapter,
@@ -1767,7 +1801,7 @@ function buildExtractionMessages(markdown, task, sourceBlocks) {
     },
     {
       role: 'user',
-      content: `任务基础信息：\n${JSON.stringify(task || {}, null, 2)}\n\n模板题目清单：\n${JSON.stringify(questions, null, 2)}`,
+      content: `任务基础信息：\n${JSON.stringify(task || {}, null, 2)}\n\n模板题目清单：\n${JSON.stringify(questionPayload, null, 2)}`,
     },
     {
       role: 'user',
@@ -1836,6 +1870,10 @@ function createProcurementAgentService({ app, configStore, aiService }) {
         ...rawState,
         templateLibrary: dedupedLibrary.kept,
       });
+      const rawQuestionCount = Array.isArray(rawState?.questions) ? rawState.questions.length : 0;
+      if (state.templateTaskPack.tasks.length && state.questions.length !== rawQuestionCount) {
+        return persist(addLog(state, `已同步模板任务包题目：${state.questions.length} 个`));
+      }
       if (dedupedLibrary.removed.length) {
         await Promise.allSettled(dedupedLibrary.removed.map((template) => removeStoredTemplate(app, template)));
         return persist(addLog(state, `已清理 ${dedupedLibrary.removed.length} 个重复模板记录`));
@@ -1844,10 +1882,10 @@ function createProcurementAgentService({ app, configStore, aiService }) {
       if (activeTemplate && (!state.templateTaskPack.tasks.length || state.templateTaskPack.schemaVersion !== TEMPLATE_TASK_SCHEMA_VERSION)) {
         const taskPack = await readTemplateTaskPack(app, activeTemplate);
         if (taskPack.tasks.length && taskPack.schemaVersion === TEMPLATE_TASK_SCHEMA_VERSION) {
-          return persist({
+          return persist(ensureStateShape({
             ...state,
             templateTaskPack: taskPack,
-          });
+          }));
         }
         const sourcePath = activeTemplate.storedPath || activeTemplate.normalizedPath;
         const normalizedPath = activeTemplate.normalizedPath || sourcePath;
@@ -1859,13 +1897,13 @@ function createProcurementAgentService({ app, configStore, aiService }) {
             fields: scanResult.fields,
             outline: scanResult.outline,
           }));
-          return persist({
+          return persist(ensureStateShape({
             ...state,
             templateOutline: scanResult.outline,
             templateBlocks: scanResult.blocks,
             templateFields: scanResult.fields,
             templateTaskPack: generatedTaskPack,
-          });
+          }));
         }
       }
       if (!state.sourceBlocks.length && state.documents.some((document) => document.role === 'demand')) {
@@ -2014,7 +2052,7 @@ function createProcurementAgentService({ app, configStore, aiService }) {
     ], templateId);
     await Promise.allSettled(nextLibrary.removed.map((template) => removeStoredTemplate(app, template)));
 
-    const nextState = addLog({
+    const nextState = addLog(ensureStateShape({
       ...current,
       task: {
         ...current.task,
@@ -2036,7 +2074,7 @@ function createProcurementAgentService({ app, configStore, aiService }) {
         previewStatus: pdfPreview.success ? 'ready' : 'unavailable',
         previewMessage: pageImagePreview.success ? pageImagePreview.message : pdfPreview.message,
       },
-    }, `已导入并扫描模板：${fileName}`);
+    }), `已导入并扫描模板：${fileName}`);
 
     return {
       success: true,
@@ -2099,7 +2137,7 @@ function createProcurementAgentService({ app, configStore, aiService }) {
       importedAt: nowIso(),
       status: 'parsed',
     };
-    const questions = createTemplateQuestions();
+    const questions = createStateQuestions(current);
     const sourceBlocks = createSourceBlocks(markdown);
     const answers = createMissingAnswers(questions);
     const fields = answersToFields(answers, questions);
@@ -2162,7 +2200,7 @@ function createProcurementAgentService({ app, configStore, aiService }) {
 
     try {
       const payload = await aiService.requestJson({
-        messages: buildExtractionMessages(markdown, runningState.task, sourceBlocks),
+        messages: buildExtractionMessages(markdown, runningState.task, sourceBlocks, runningState.questions),
         temperature: 0.1,
         timeout_ms: 300000,
         schemaName: 'procurement_template_answers',
@@ -2170,8 +2208,8 @@ function createProcurementAgentService({ app, configStore, aiService }) {
         failureMessage: '模型返回的采购模板答案 JSON 无效',
         logTitle: '采购模板答题',
       });
-      const answers = normalizeExtractedAnswers(payload, markdown, sourceBlocks);
-      const fields = answersToFields(answers, createTemplateQuestions());
+      const answers = normalizeExtractedAnswers(payload, markdown, sourceBlocks, runningState.questions);
+      const fields = answersToFields(answers, runningState.questions);
       const nextTask = applyTaskFromFields(runningState.task, fields);
       const nextState = addLog({
         ...runningState,
@@ -2179,7 +2217,7 @@ function createProcurementAgentService({ app, configStore, aiService }) {
           ...nextTask,
           status: 'answers',
         },
-        questions: createTemplateQuestions(),
+        questions: runningState.questions,
         sourceBlocks,
         answers,
         fields,
@@ -2210,7 +2248,7 @@ function createProcurementAgentService({ app, configStore, aiService }) {
 
   async function updateField(payload) {
     const state = await loadState();
-    const questions = createTemplateQuestions();
+    const questions = createStateQuestions(state);
     const fieldId = normalizeFieldKey(payload?.id || payload?.key || payload?.questionId);
     const value = cleanExtractedValue(payload?.confirmedValue ?? payload?.value);
     const status = VALID_FIELD_STATUSES.has(payload?.status)
@@ -2244,7 +2282,7 @@ function createProcurementAgentService({ app, configStore, aiService }) {
 
   async function acceptHighConfidence(threshold = 90) {
     const state = await loadState();
-    const questions = createTemplateQuestions();
+    const questions = createStateQuestions(state);
     const minConfidence = clampConfidence(threshold) || 90;
     const answers = state.answers.map((answer) => {
       if (!answer.confirmedValue || answer.risk || answer.status === 'missing') return answer;
