@@ -508,8 +508,12 @@ function renderPageTaskAnchorOverlays(
     fillMarker.className = `procurement-page-task-fill-overlay is-${fillValue.status || 'filled'}${anchor.id === selectedAnchorId ? ' is-active' : ''}`;
     fillMarker.title = `${anchor.label}：${fillValue.value}`;
     fillMarker.textContent = fillValue.value;
-    fillMarker.style.left = `${location.rect.left * 100}%`;
-    fillMarker.style.top = `${Math.min(96, (location.rect.top + location.rect.height) * 100 + 0.4)}%`;
+    const labelRight = (location.rect.left + location.rect.width) * 100;
+    const inlineLeft = Math.min(82, labelRight + 1.8);
+    const hasInlineRoom = inlineLeft < 82;
+    fillMarker.style.left = `${hasInlineRoom ? inlineLeft : location.rect.left * 100}%`;
+    fillMarker.style.top = `${hasInlineRoom ? location.rect.top * 100 : Math.min(96, (location.rect.top + location.rect.height) * 100 + 0.4)}%`;
+    fillMarker.style.maxWidth = `${hasInlineRoom ? Math.max(12, 96 - inlineLeft) : 42}%`;
     layer.appendChild(fillMarker);
   });
 

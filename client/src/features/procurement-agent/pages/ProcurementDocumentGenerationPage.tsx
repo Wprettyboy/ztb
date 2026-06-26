@@ -15,6 +15,7 @@ import type {
   ProcurementPageTaskFillPack,
   ProcurementPageTaskFillResult,
   ProcurementPageTaskFillStatus,
+  ProcurementSourceBlock,
   ProcurementTemplatePageTask,
   ProcurementTemplatePageTaskItem,
   ProcurementTemplatePageTaskPack,
@@ -492,9 +493,11 @@ function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGe
         selectedTaskContext={selectedTaskContext}
         currentPageTask={currentPageTask}
         visibleRows={visibleRows}
+        sourceBlocks={safeArray(state?.sourceBlocks)}
         completedCount={Math.min(completedCount, taskRows.length)}
         reviewCount={reviewCount}
         locatedAnchorCount={locatedAnchorCount}
+        onFillPackChange={setFillPack}
         onBack={() => setStage(completedCount >= taskRows.length ? 'done' : 'setup')}
         onNavigate={onNavigate}
       />
@@ -818,9 +821,11 @@ function GenerationPreview({
   selectedTaskContext,
   currentPageTask,
   visibleRows,
+  sourceBlocks,
   completedCount,
   reviewCount,
   locatedAnchorCount,
+  onFillPackChange,
   onBack,
   onNavigate,
 }: {
@@ -836,12 +841,16 @@ function GenerationPreview({
   selectedTaskContext: { page: ProcurementTemplatePageTask; task: ProcurementTemplatePageTaskItem } | null;
   currentPageTask?: ProcurementTemplatePageTask;
   visibleRows: GenerationTaskRow[];
+  sourceBlocks: ProcurementSourceBlock[];
   completedCount: number;
   reviewCount: number;
   locatedAnchorCount: number;
+  onFillPackChange: (fillPack: ProcurementPageTaskFillPack) => void;
   onBack: () => void;
   onNavigate: (section: SectionId) => void;
 }) {
+  const [sourceTaskKey, setSourceTaskKey] = useState('');
+  const [savingTaskKey, setSavingTaskKey] = useState('');
   const currentRows = useMemo(
     () => visibleRows.filter((row) => row.page === currentPdfPage),
     [currentPdfPage, visibleRows],
@@ -864,6 +873,47 @@ function GenerationPreview({
   const selectedRow = selectedTaskContext
     ? visibleRows.find((row) => row.page === selectedTaskContext.page.page && row.label === selectedTaskContext.task.label)
     : undefined;
+  const sourceTask = useMemo(() => {
+    if (!sourceTaskKey && selectedTaskContext?.task) return selectedTaskContext.task;
+    if (!sourceTaskKey) return null;
+    for (const page of safeArray(pageTaskPack?.pages)) {
+      const task = safeArray(page.tasks).find((item) => item.key === sourceTaskKey);
+      if (task) return task;
+    }
+    return null;
+  }, [pageTaskPack?.pages, selectedTaskContext?.task, sourceTaskKey]);
+  const sourceRow = sourceTask
+    ? visibleRows.find((row) => rowKeyWithoutIndex(row.id) === sourceTask.key || (row.page === currentPdfPage && row.label === sourceTask.label))
+    : selectedRow;
+  const sourceBlocksById = useMemo(() => new Map(sourceBlocks.map((block) => [block.id, block])), [sourceBlocks]);
+  const sourceEvidenceBlocks = safeArray(sourceRow?.sourceBlockIds).map((blockId) => sourceBlocksById.get(blockId)).filter(Boolean) as ProcurementSourceBlock[];
+  const handleShowSource = useCallback((task: ProcurementTemplatePageTaskItem) => {
+    setSourceTaskKey(task.key);
+  }, []);
+  const handleSelectAnchor = useCallback((anchorId: string, task?: ProcurementTemplatePageTaskItem) => {
+    if (task) {
+      setSourceTaskKey(task.key);
+    }
+    onSelectedAnchorIdChange(anchorId);
+  }, [onSelectedAnchorIdChange]);
+  const handleSaveTaskValue = useCallback(async (task: ProcurementTemplatePageTaskItem, nextValue: string) => {
+    if (!template?.id || !window.yibiao?.procurementAgent.updatePageTaskFillResult) {
+      return;
+    }
+    setSavingTaskKey(task.key);
+    try {
+      const nextFillPack = await window.yibiao.procurementAgent.updatePageTaskFillResult({
+        templateId: template.id,
+        key: task.key,
+        value: nextValue,
+        status: nextValue.trim() ? (task.risk ? 'review' : 'filled') : 'missing',
+      });
+      onFillPackChange(nextFillPack);
+      setSourceTaskKey(task.key);
+    } finally {
+      setSavingTaskKey('');
+    }
+  }, [onFillPackChange, template?.id]);
 
   return (
     <section className="procurement-template-reader-page procurement-generation-preview-page">
@@ -935,7 +985,12 @@ function GenerationPreview({
                 row={currentRows.find((item) => item.label === task.label)}
                 active={safeArray(task.anchors).some((_anchor, index) => `${task.key}_anchor_${String(index + 1).padStart(3, '0')}` === selectedAnchorId)}
                 locations={anchorLocations}
-                onSelect={(anchorId) => onSelectedAnchorIdChange(anchorId)}
+                sourceActive={sourceTaskKey === task.key}
+                saving={savingTaskKey === task.key}
+                editable={Boolean(window.yibiao?.procurementAgent.updatePageTaskFillResult)}
+                onSource={() => handleShowSource(task)}
+                onSelect={(anchorId) => handleSelectAnchor(anchorId, task)}
+                onSave={(value) => handleSaveTaskValue(task, value)}
               />
             )) : (
               <div className="procurement-empty-mini">当前页没有待核对任务。</div>
@@ -944,7 +999,15 @@ function GenerationPreview({
 
           <div className="procurement-generation-evidence-strip">
             <strong>证据溯源</strong>
-            <p>{selectedTaskContext?.task.anchors[0]?.sourceText || selectedRow?.evidence || '点击右侧任务后，这里会显示对应模板原文锚点和需求文件证据。'}</p>
+            <p>
+              {sourceTask
+                ? `模板原文：${safeArray(sourceTask.anchors)[0]?.sourceText || safeArray(sourceTask.anchors)[0]?.matchText || '暂无模板锚点'}`
+                : '点击右侧任务的“溯源原文”后，这里会显示模板原文锚点和需求文件证据。'}
+            </p>
+            {sourceRow?.evidence ? <p>需求依据：{sourceRow.evidence}</p> : null}
+            {sourceEvidenceBlocks.length ? sourceEvidenceBlocks.map((block) => (
+              <p key={block.id}>[{block.id}] {block.title || block.heading || '需求片段'}：{block.preview || block.text}</p>
+            )) : null}
           </div>
         </aside>
       </main>
@@ -957,37 +1020,85 @@ function PreviewTaskCard({
   task,
   row,
   active,
+  sourceActive,
   locations,
+  saving,
+  editable,
+  onSource,
   onSelect,
+  onSave,
 }: {
   page: number;
   task: ProcurementTemplatePageTaskItem;
   row?: GenerationTaskRow;
   active: boolean;
+  sourceActive: boolean;
   locations: Record<string, TemplatePdfFieldLocation>;
+  saving: boolean;
+  editable: boolean;
+  onSource: () => void;
   onSelect: (anchorId: string) => void;
+  onSave: (value: string) => void | Promise<void>;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [draftValue, setDraftValue] = useState(row?.value || '');
   const anchors = safeArray(task.anchors);
   const firstAnchorId = anchors.length ? `${task.key}_anchor_001` : '';
   const locatedCount = anchors.filter((_anchor, index) => locations[`${task.key}_anchor_${String(index + 1).padStart(3, '0')}`]?.found).length;
+  useEffect(() => {
+    if (!editing) {
+      setDraftValue(row?.value || '');
+    }
+  }, [editing, row?.value]);
   return (
-    <article className={`procurement-generation-review-card${active ? ' is-active' : ''}${task.risk ? ' has-risk' : ''}`}>
+    <article className={`procurement-generation-review-card${active ? ' is-active' : ''}${sourceActive ? ' is-source-active' : ''}${task.risk ? ' has-risk' : ''}`}>
       <div>
         <strong>{task.label}{task.required ? ' *' : ''}</strong>
         <span>{taskTypeLabel(task.type)}</span>
       </div>
-      <p>{row?.value || (row?.status === 'missing' ? '未提取到明确依据' : '未填充')}</p>
+      {editing ? (
+        <label className="procurement-generation-review-editor">
+          <span>填充值</span>
+          <textarea value={draftValue} onChange={(event) => setDraftValue(event.currentTarget.value)} />
+        </label>
+      ) : (
+        <p>{row?.value || (row?.status === 'missing' ? '未提取到明确依据' : '未填充')}</p>
+      )}
       <small>
         第 {page} 页 · {task.group || task.chapter || '未分组'} · {locatedCount}/{anchors.length} 锚点
         {row?.confidence ? ` · 置信度 ${row.confidence}` : ''}
       </small>
       {(row?.evidence || row?.reason) ? <small>{row.evidence || row.reason}</small> : null}
       <div className="procurement-generation-review-card-actions">
-        <button type="button" className="procurement-secondary-button">确认</button>
-        <button type="button" className="procurement-secondary-button">编辑</button>
-        <button type="button" className="procurement-primary-button" disabled={!firstAnchorId} onClick={() => onSelect(firstAnchorId)}>
-          定位
-        </button>
+        {editing ? (
+          <>
+            <button
+              type="button"
+              className="procurement-primary-button"
+              disabled={saving}
+              onClick={() => {
+                void Promise.resolve(onSave(draftValue)).then(() => setEditing(false));
+              }}
+            >
+              {saving ? '保存中' : '保存'}
+            </button>
+            <button type="button" className="procurement-secondary-button" disabled={saving} onClick={() => { setDraftValue(row?.value || ''); setEditing(false); }}>
+              取消
+            </button>
+          </>
+        ) : (
+          <>
+            <button type="button" className="procurement-secondary-button" onClick={onSource}>
+              溯源原文
+            </button>
+            <button type="button" className="procurement-secondary-button" disabled={!editable} onClick={() => setEditing(true)}>
+              编辑
+            </button>
+            <button type="button" className="procurement-primary-button" disabled={!firstAnchorId} onClick={() => onSelect(firstAnchorId)}>
+              定位
+            </button>
+          </>
+        )}
       </div>
     </article>
   );

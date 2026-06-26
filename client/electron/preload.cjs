@@ -39,6 +39,7 @@ const bridge = {
     readTemplatePdf: (payload) => ipcRenderer.invoke('procurement-agent:read-template-pdf', payload),
     readTemplatePageTasks: (payload) => ipcRenderer.invoke('procurement-agent:read-template-page-tasks', payload),
     readPageTaskFillPack: (payload) => ipcRenderer.invoke('procurement-agent:read-page-task-fill-pack', payload),
+    updatePageTaskFillResult: (payload) => ipcRenderer.invoke('procurement-agent:update-page-task-fill-result', payload),
     analyzeTemplateWithAi: (payload) => ipcRenderer.invoke('procurement-agent:analyze-template-with-ai', payload),
     fillPageTasksWithAi: (payload) => ipcRenderer.invoke('procurement-agent:fill-page-tasks-with-ai', payload),
     onEvent: (callback) => {

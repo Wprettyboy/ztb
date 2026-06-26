@@ -3178,6 +3178,52 @@ function createProcurementAgentService({ app, configStore, aiService }) {
     return readStoredPageTaskFillPack(app, template.id);
   }
 
+  async function updatePageTaskFillResult(payload = {}) {
+    const state = await loadState();
+    const templateId = normalizeString(payload?.templateId) || state.activeTemplateId;
+    const key = normalizeFieldKey(payload?.key || payload?.taskKey || payload?.task_key);
+    const template = state.templateLibrary.find((item) => item.id === templateId)
+      || state.templateLibrary.find((item) => item.id === state.activeTemplateId);
+    if (!template) {
+      throw new Error('请先选择采购模板');
+    }
+    if (!key) {
+      throw new Error('缺少要更新的任务 key');
+    }
+
+    const fillPack = await readStoredPageTaskFillPack(app, template.id);
+    if (!fillPack || !Array.isArray(fillPack.results)) {
+      throw new Error('当前模板还没有可编辑的填充结果');
+    }
+    const resultIndex = fillPack.results.findIndex((result) => normalizeFieldKey(result?.key) === key);
+    if (resultIndex < 0) {
+      throw new Error(`未找到填充任务：${key}`);
+    }
+
+    const value = normalizeString(payload?.value);
+    const evidence = payload?.evidence === undefined ? fillPack.results[resultIndex].evidence : normalizeString(payload?.evidence);
+    const reason = payload?.reason === undefined ? fillPack.results[resultIndex].reason : normalizeString(payload?.reason);
+    const requestedStatus = normalizeString(payload?.status);
+    const status = PAGE_TASK_FILL_RESULT_STATUSES.has(requestedStatus) ? requestedStatus : (value ? 'review' : 'missing');
+    fillPack.results[resultIndex] = {
+      ...fillPack.results[resultIndex],
+      value,
+      evidence,
+      reason,
+      status,
+      confidence: value ? Number(payload?.confidence || fillPack.results[resultIndex].confidence || 80) : 0,
+      updatedAt: nowIso(),
+    };
+
+    const nextFillPack = {
+      ...fillPack,
+      ...createPageTaskFillPackSummary(fillPack),
+      generatedAt: fillPack.generatedAt || nowIso(),
+      updatedAt: nowIso(),
+    };
+    return savePageTaskFillPack(app, template.id, nextFillPack);
+  }
+
   async function fillPageTasksWithAi(payload = {}) {
     const state = await loadState();
     const markdown = await readDemandMarkdown();
@@ -3680,6 +3726,7 @@ function createProcurementAgentService({ app, configStore, aiService }) {
     readTemplatePdf,
     readTemplatePageTasks,
     readPageTaskFillPack,
+    updatePageTaskFillResult,
     analyzeTemplateWithAi,
     fillPageTasksWithAi,
     selectTemplate,

@@ -14184,6 +14184,11 @@ button {
   box-shadow: inset 4px 0 0 #1e63d6;
 }
 
+.procurement-generation-review-card.is-source-active {
+  border-color: rgba(13, 148, 136, 0.34);
+  box-shadow: inset 4px 0 0 #0d9488;
+}
+
 .procurement-generation-review-card.has-risk {
   background: #fffaf0;
   border-color: rgba(205, 129, 36, 0.24);
@@ -14217,6 +14222,34 @@ button {
   color: var(--yb-text-soft);
   font-size: 12px;
   line-height: 1.6;
+}
+
+.procurement-generation-review-editor {
+  display: grid;
+  gap: 6px;
+}
+
+.procurement-generation-review-editor span {
+  width: fit-content;
+}
+
+.procurement-generation-review-editor textarea {
+  width: 100%;
+  min-height: 74px;
+  resize: vertical;
+  padding: 8px 9px;
+  color: var(--yb-text);
+  font-size: 13px;
+  line-height: 1.55;
+  background: #ffffff;
+  border: 1px solid rgba(33, 116, 253, 0.22);
+  border-radius: 8px;
+  outline: none;
+}
+
+.procurement-generation-review-editor textarea:focus {
+  border-color: rgba(33, 116, 253, 0.46);
+  box-shadow: 0 0 0 3px rgba(33, 116, 253, 0.1);
 }
 
 .procurement-generation-review-card-actions {

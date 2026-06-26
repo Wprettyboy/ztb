@@ -1,7 +1,7 @@
 import type { ChatCompletionRequest, JsonCompletionRequest } from './ai';
 import type { ClientConfig, ConfigSaveResult, ImageModelTestResult, ModelListResult } from './config';
 import type { KnowledgeAnalysisSnapshot, KnowledgeBaseEvent, KnowledgeBaseIndex, KnowledgeBaseIndexMutationResult, KnowledgeBaseMigrationResult, KnowledgeBaseMigrationStatus, KnowledgeBaseMutationResult, KnowledgeBaseRetryDocumentResult, KnowledgeBaseStartMatchingResult, KnowledgeBaseUploadResult, KnowledgeDocument, KnowledgeFolder, KnowledgeItem } from '../../features/knowledge-base/types';
-import type { ProcurementActionResult, ProcurementAgentState, ProcurementPageTaskFillPack } from '../../features/procurement-agent/types';
+import type { ProcurementActionResult, ProcurementAgentState, ProcurementPageTaskFillPack, ProcurementPageTaskFillStatus } from '../../features/procurement-agent/types';
 import type { BidAnalysisMode, BidAnalysisTaskState, ContentGenerationOptions, ContentGenerationPlanState, ContentGenerationRuntimeState, ContentGenerationSectionState, DetectedBidSection, GlobalFactGroupState, SaveOutlineRequest, TechnicalPlanState, TechnicalPlanStep, TechnicalPlanWorkflowKind } from '../../features/technical-plan/types';
 import type { OutlineData, OutlineMode } from './outline';
 
@@ -88,6 +88,7 @@ export interface YibiaoBridge {
     readTemplatePdf: (payload?: { templateId?: string }) => Promise<ArrayBuffer | Uint8Array | number[]>;
     readTemplatePageTasks?: (payload?: { templateId?: string }) => Promise<import('../../features/procurement-agent/types').ProcurementTemplatePageTaskPack>;
     readPageTaskFillPack?: (payload?: { templateId?: string }) => Promise<ProcurementPageTaskFillPack | null>;
+    updatePageTaskFillResult?: (payload: { templateId?: string; key: string; value: string; evidence?: string; reason?: string; status?: ProcurementPageTaskFillStatus; confidence?: number }) => Promise<ProcurementPageTaskFillPack>;
     analyzeTemplateWithAi?: (payload?: { templateId?: string; concurrency?: number }) => Promise<ProcurementActionResult>;
     fillPageTasksWithAi?: (payload?: { templateId?: string; batchSize?: number }) => Promise<{ success: boolean; message?: string; state: ProcurementAgentState; fillPack?: ProcurementPageTaskFillPack }>;
     onEvent?: (callback: (event: unknown) => void) => () => void;
