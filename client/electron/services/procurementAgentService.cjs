@@ -2003,6 +2003,558 @@ function createPageTaskFillPackSummary(fillPack) {
   };
 }
 
+function escapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildParagraphTextSegments(paragraph) {
+  const segments = [];
+  let fullText = '';
+  descendants(paragraph, 't').forEach((textNode) => {
+    let run = textNode.parentNode;
+    while (run && localName(run) !== 'r') {
+      run = run.parentNode;
+    }
+    const text = textNode.textContent || '';
+    const start = fullText.length;
+    fullText += text;
+    segments.push({
+      node: textNode,
+      run,
+      text,
+      start,
+      end: start + text.length,
+    });
+  });
+  return { segments, fullText };
+}
+
+function setWordTextNode(textNode, text) {
+  textNode.textContent = text;
+  if (/^\s|\s$|\s{2,}/.test(String(text || ''))) {
+    textNode.setAttribute('xml:space', 'preserve');
+  }
+}
+
+function appendTextToRun(doc, run, text) {
+  const parts = String(text || '').split(/\n/);
+  parts.forEach((part, index) => {
+    if (index > 0) {
+      run.appendChild(doc.createElement('w:br'));
+    }
+    const textNode = doc.createElement('w:t');
+    if (/^\s|\s$|\s{2,}/.test(part)) {
+      textNode.setAttribute('xml:space', 'preserve');
+    }
+    textNode.appendChild(doc.createTextNode(part));
+    run.appendChild(textNode);
+  });
+}
+
+function createStyledTextRun(doc, value, styleRun) {
+  const run = doc.createElement('w:r');
+  const sourceProperties = styleRun ? elementChildren(styleRun, 'rPr')[0] : null;
+  if (sourceProperties) {
+    run.appendChild(sourceProperties.cloneNode(true));
+  }
+  appendTextToRun(doc, run, value);
+  return run;
+}
+
+function insertNodeAfter(referenceNode, nextNode) {
+  const parent = referenceNode?.parentNode;
+  if (!parent) return false;
+  if (referenceNode.nextSibling) {
+    parent.insertBefore(nextNode, referenceNode.nextSibling);
+  } else {
+    parent.appendChild(nextNode);
+  }
+  return true;
+}
+
+function segmentAtIndex(segments, index, preferPrevious = false) {
+  if (!segments.length) return null;
+  if (preferPrevious) {
+    for (let cursor = segments.length - 1; cursor >= 0; cursor -= 1) {
+      const segment = segments[cursor];
+      if (index >= segment.start && index <= segment.end) return segment;
+    }
+  }
+  return segments.find((segment) => index >= segment.start && index <= segment.end) || segments[segments.length - 1];
+}
+
+function insertTextAtParagraphIndex(doc, paragraph, index, value) {
+  const { segments, fullText } = buildParagraphTextSegments(paragraph);
+  if (!segments.length) {
+    const run = createStyledTextRun(doc, value, null);
+    paragraph.appendChild(run);
+    return true;
+  }
+
+  const boundedIndex = Math.max(0, Math.min(Number(index || 0), fullText.length));
+  const segment = segmentAtIndex(segments, boundedIndex, true) || segments[segments.length - 1];
+  const offset = Math.max(0, Math.min(boundedIndex - segment.start, segment.text.length));
+  const before = segment.text.slice(0, offset);
+  const after = segment.text.slice(offset);
+  setWordTextNode(segment.node, before);
+
+  const insertedRun = createStyledTextRun(doc, value, segment.run);
+  insertNodeAfter(segment.run, insertedRun);
+  if (after) {
+    const afterRun = createStyledTextRun(doc, after, segment.run);
+    insertNodeAfter(insertedRun, afterRun);
+  }
+  return true;
+}
+
+function replaceParagraphTextRange(doc, paragraph, start, end, value) {
+  const { segments, fullText } = buildParagraphTextSegments(paragraph);
+  if (!segments.length) return false;
+  const boundedStart = Math.max(0, Math.min(Number(start || 0), fullText.length));
+  const boundedEnd = Math.max(boundedStart, Math.min(Number(end || boundedStart), fullText.length));
+  if (boundedStart === boundedEnd) {
+    return insertTextAtParagraphIndex(doc, paragraph, boundedStart, value);
+  }
+
+  const firstSegment = segmentAtIndex(segments, boundedStart) || segments[0];
+  const lastSegment = segmentAtIndex(segments, boundedEnd, true) || firstSegment;
+  const firstIndex = segments.indexOf(firstSegment);
+  const lastIndex = segments.indexOf(lastSegment);
+
+  if (firstSegment === lastSegment) {
+    const before = firstSegment.text.slice(0, boundedStart - firstSegment.start);
+    const after = firstSegment.text.slice(boundedEnd - firstSegment.start);
+    setWordTextNode(firstSegment.node, `${before}${value}${after}`);
+    return true;
+  }
+
+  const before = firstSegment.text.slice(0, boundedStart - firstSegment.start);
+  const after = lastSegment.text.slice(boundedEnd - lastSegment.start);
+  setWordTextNode(firstSegment.node, `${before}${value}`);
+  for (let index = firstIndex + 1; index < lastIndex; index += 1) {
+    setWordTextNode(segments[index].node, '');
+  }
+  setWordTextNode(lastSegment.node, after);
+  return true;
+}
+
+function findLooseRange(rawText, query) {
+  const raw = String(rawText || '');
+  const target = normalizeLooseText(query);
+  if (!target) return null;
+  for (let start = 0; start < raw.length; start += 1) {
+    while (start < raw.length && /\s/.test(raw[start])) start += 1;
+    let cursor = start;
+    let targetCursor = 0;
+    while (cursor < raw.length && targetCursor < target.length) {
+      const char = raw[cursor];
+      if (/\s/.test(char)) {
+        cursor += 1;
+        continue;
+      }
+      if (char.toLowerCase() !== target[targetCursor]) break;
+      cursor += 1;
+      targetCursor += 1;
+    }
+    if (targetCursor === target.length) {
+      return { start, end: cursor };
+    }
+  }
+  return null;
+}
+
+function collectTaskAnchorCandidates(task) {
+  const candidates = [];
+  (Array.isArray(task?.anchors) ? task.anchors : []).forEach((anchor) => {
+    [anchor?.sourceText, anchor?.matchText].forEach((value) => {
+      const text = normalizeString(value);
+      if (text && text.length >= 2) candidates.push(text);
+    });
+  });
+  [task?.label ? `${task.label}：` : '', task?.label ? `${task.label}:` : '', task?.label, task?.placeholder]
+    .map(normalizeString)
+    .filter((value) => value && value.length >= 2)
+    .forEach((value) => candidates.push(value));
+  return [...new Set(candidates)].sort((first, second) => second.length - first.length);
+}
+
+function collectPrioritizedTaskAnchorCandidates(task, value) {
+  const all = collectTaskAnchorCandidates(task);
+  const selectedOptions = normalizeChoiceValueSet(value, task?.options || []);
+  const selectedNeedles = [...selectedOptions].map(normalizeLooseText).filter(Boolean);
+  if (!selectedNeedles.length) {
+    return { preferred: [], all };
+  }
+  const preferred = all.filter((candidate) => {
+    const normalized = normalizeLooseText(candidate);
+    return selectedNeedles.some((needle) => normalized.includes(needle));
+  });
+  return {
+    preferred,
+    all,
+  };
+}
+
+function findAnchorRangeInText(rawText, candidates) {
+  const raw = String(rawText || '');
+  for (const candidate of candidates) {
+    const exactIndex = raw.indexOf(candidate);
+    if (exactIndex >= 0) {
+      return { start: exactIndex, end: exactIndex + candidate.length, candidate };
+    }
+  }
+  for (const candidate of candidates) {
+    const range = findLooseRange(raw, candidate);
+    if (range) return { ...range, candidate };
+  }
+  return null;
+}
+
+function textMatchesAnyCandidate(paragraphText, rawText, candidates) {
+  const normalizedParagraph = normalizeLooseText(paragraphText || rawText);
+  const normalizedRaw = normalizeLooseText(rawText);
+  return candidates.some((candidate) => {
+    const normalized = normalizeLooseText(candidate);
+    return normalized && (normalizedParagraph.includes(normalized) || normalizedRaw.includes(normalized));
+  });
+}
+
+function createDocxParagraphIndex(doc) {
+  return descendants(doc, 'p').map((paragraph, index) => {
+    const { fullText } = buildParagraphTextSegments(paragraph);
+    return {
+      paragraph,
+      index,
+      rawText: fullText,
+      text: getNodeText(paragraph),
+    };
+  });
+}
+
+function refreshParagraphIndexItem(item) {
+  const { fullText } = buildParagraphTextSegments(item.paragraph);
+  item.rawText = fullText;
+  item.text = getNodeText(item.paragraph);
+}
+
+function findParagraphForCandidates(paragraphs, candidates, startIndex) {
+  if (!candidates.length) return null;
+  const boundedStart = Math.max(0, Math.min(Number(startIndex || 0), Math.max(0, paragraphs.length - 1)));
+  const ranges = [
+    [boundedStart, paragraphs.length],
+    [0, boundedStart],
+  ];
+
+  for (const [from, to] of ranges) {
+    for (let index = from; index < to; index += 1) {
+      const item = paragraphs[index];
+      if (!item) continue;
+      if (textMatchesAnyCandidate(item.text, item.rawText, candidates)) {
+        const anchorRange = findAnchorRangeInText(item.rawText, candidates);
+        return { item, anchorRange, candidates };
+      }
+    }
+  }
+  return null;
+}
+
+function findParagraphForTask(paragraphs, task, startIndex, value = '') {
+  const candidates = collectPrioritizedTaskAnchorCandidates(task, value);
+  return findParagraphForCandidates(paragraphs, candidates.preferred, startIndex)
+    || findParagraphForCandidates(paragraphs, candidates.all, startIndex);
+}
+
+function findRegexRangeInText(text, regex) {
+  const match = regex.exec(text);
+  if (!match) return null;
+  return {
+    start: match.index,
+    end: match.index + match[0].length,
+    match,
+  };
+}
+
+function findLastBlankRangeBeforeUnit(rangeText) {
+  const regex = /([ \t\u00A0_＿]{1,})((?:日历天|个标段|万元|元|个|天|%|％)|[。；;，,、）)])/g;
+  let selected = null;
+  let match;
+  while ((match = regex.exec(rangeText)) !== null) {
+    selected = {
+      start: match.index,
+      end: match.index + match[1].length,
+    };
+  }
+  return selected;
+}
+
+function findValueTargetRange(rawText, task, anchorRange) {
+  const raw = String(rawText || '');
+  const rangeStart = anchorRange?.start ?? 0;
+  const rangeEnd = anchorRange?.end ?? raw.length;
+  const rangeText = raw.slice(rangeStart, rangeEnd);
+  const placeholders = [
+    task?.placeholder,
+    task?.label,
+    '采购项目名称',
+    '项目名称',
+    '项目编号',
+    '年 月 日',
+  ].map(normalizeString).filter((value, index, array) => value && array.indexOf(value) === index);
+
+  for (const placeholder of placeholders) {
+    const bracketRange = findRegexRangeInText(
+      rangeText,
+      new RegExp(`[（(【\\[]\\s*${escapeRegExp(placeholder)}\\s*[）)】\\]]`),
+    );
+    if (bracketRange) {
+      return {
+        start: rangeStart + bracketRange.start,
+        end: rangeStart + bracketRange.end,
+      };
+    }
+  }
+
+  const quoteRange = findRegexRangeInText(rangeText, /[“"]\s*[”"]/);
+  if (quoteRange) {
+    return {
+      start: rangeStart + quoteRange.start + 1,
+      end: rangeStart + quoteRange.end - 1,
+    };
+  }
+
+  const dateRange = findRegexRangeInText(rangeText, /年\s*月\s*日/);
+  if (/日期|时间/.test(task?.label || '') && dateRange) {
+    return {
+      start: rangeStart + dateRange.start,
+      end: rangeStart + dateRange.end,
+    };
+  }
+
+  const blankRange = findLastBlankRangeBeforeUnit(rangeText);
+  if (blankRange) {
+    return {
+      start: rangeStart + blankRange.start,
+      end: rangeStart + blankRange.end,
+    };
+  }
+
+  const labelColonCandidates = [
+    task?.label ? `${task.label}：` : '',
+    task?.label ? `${task.label}:` : '',
+  ].map(normalizeString).filter(Boolean);
+  for (const labelColon of labelColonCandidates) {
+    const labelIndex = raw.indexOf(labelColon, Math.max(0, rangeStart - 20));
+    if (labelIndex >= 0 && labelIndex <= rangeEnd) {
+      let start = labelIndex + labelColon.length;
+      let end = start;
+      while (end < raw.length && /[ \t\u00A0_＿]/.test(raw[end])) end += 1;
+      return { start, end };
+    }
+  }
+
+  const colonIndex = Math.max(rangeText.lastIndexOf('：'), rangeText.lastIndexOf(':'));
+  if (colonIndex >= 0) {
+    let start = rangeStart + colonIndex + 1;
+    let end = start;
+    while (end < raw.length && /[ \t\u00A0_＿]/.test(raw[end])) end += 1;
+    return { start, end };
+  }
+
+  return {
+    start: rangeEnd,
+    end: rangeEnd,
+  };
+}
+
+function normalizeChoiceValueSet(value, options = []) {
+  const valueText = normalizeLooseText(value);
+  const selected = new Set();
+  const sortedOptions = [...options].map(normalizeString).filter(Boolean).sort((first, second) => second.length - first.length);
+  sortedOptions.forEach((option) => {
+    const optionText = normalizeLooseText(option);
+    if (optionText && valueText.includes(optionText)) {
+      selected.add(option);
+    }
+  });
+  sortedOptions.forEach((option) => {
+    if (![...selected].some((selectedOption) => selectedOption !== option && normalizeLooseText(selectedOption).includes(normalizeLooseText(option)))) {
+      return;
+    }
+    selected.delete(option);
+  });
+  return selected;
+}
+
+function removeSelectedOptionsFromValue(value, selectedOptions) {
+  let text = normalizeString(value);
+  [...selectedOptions].sort((first, second) => second.length - first.length).forEach((option) => {
+    text = text.replace(new RegExp(escapeRegExp(option), 'g'), '');
+  });
+  return text
+    .replace(/[（(]\s*[）)]/g, '')
+    .replace(/[【\[]\s*[】\]]/g, '')
+    .replace(/^[：:，,；;、\s]+|[：:，,；;、\s]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function applyChoiceMarkersToParagraph(paragraph, task, value) {
+  const options = Array.isArray(task?.options) ? task.options.map(normalizeString).filter(Boolean) : [];
+  if (!options.length || !String(value || '').trim()) {
+    return { changed: false, handled: false, selected: new Set(), textValue: normalizeString(value) };
+  }
+  const selected = normalizeChoiceValueSet(value, options);
+  if (!selected.size) {
+    return { changed: false, handled: false, selected, textValue: normalizeString(value) };
+  }
+
+  const optionTexts = options.map((option) => ({
+    option,
+    normalized: normalizeLooseText(option),
+  })).filter((option) => option.normalized);
+  let changed = false;
+  const { segments, fullText } = buildParagraphTextSegments(paragraph);
+  const segmentTextByIndex = new Map(segments.map((segment, index) => [index, [...segment.text]]));
+  const checkboxRanges = [];
+  const checkboxPattern = /[□■☑]/g;
+  let checkboxMatch;
+  while ((checkboxMatch = checkboxPattern.exec(fullText)) !== null) {
+    checkboxRanges.push(checkboxMatch.index);
+  }
+
+  checkboxRanges.forEach((checkboxIndex, boxOrder) => {
+    const nextCheckboxIndex = checkboxRanges[boxOrder + 1] ?? Math.min(fullText.length, checkboxIndex + 100);
+    const followingText = fullText.slice(checkboxIndex + 1, nextCheckboxIndex);
+    const normalizedFollowing = normalizeLooseText(followingText);
+    const matchedOptions = optionTexts.filter((item) => normalizedFollowing.includes(item.normalized));
+    if (!matchedOptions.length) return;
+    const shouldSelect = matchedOptions.some((item) => selected.has(item.option));
+    const segmentIndex = segments.findIndex((segment) => checkboxIndex >= segment.start && checkboxIndex < segment.end);
+    if (segmentIndex < 0) return;
+    const chars = segmentTextByIndex.get(segmentIndex);
+    const charIndex = checkboxIndex - segments[segmentIndex].start;
+    const nextChar = shouldSelect ? '■' : '□';
+    if (chars[charIndex] !== nextChar) {
+      chars[charIndex] = nextChar;
+      changed = true;
+    }
+  });
+
+  segments.forEach((segment) => {
+    const segmentIndex = segments.indexOf(segment);
+    const nextText = (segmentTextByIndex.get(segmentIndex) || []).join('');
+    if (nextText !== segment.text) {
+      setWordTextNode(segment.node, nextText);
+    }
+  });
+
+  return {
+    changed,
+    handled: true,
+    selected,
+    textValue: removeSelectedOptionsFromValue(value, selected),
+  };
+}
+
+function applyTaskFillToParagraph(doc, paragraph, task, value, anchorRange) {
+  const choiceResult = applyChoiceMarkersToParagraph(paragraph, task, value);
+  const type = normalizeString(task?.type || 'blank');
+  if (['choice', 'multiChoice'].includes(type) && choiceResult.handled) {
+    return true;
+  }
+
+  const textValue = type === 'compound'
+    ? choiceResult.textValue
+    : normalizeString(value);
+  if (!String(textValue || '').trim()) {
+    return Boolean(choiceResult.changed);
+  }
+
+  const { fullText } = buildParagraphTextSegments(paragraph);
+  const targetRange = findValueTargetRange(fullText, task, anchorRange);
+  return replaceParagraphTextRange(doc, paragraph, targetRange.start, targetRange.end, textValue) || choiceResult.changed;
+}
+
+function getTaskAnchorText(task) {
+  return (Array.isArray(task?.anchors) ? task.anchors : [])
+    .map((anchor) => `${anchor?.sourceText || ''} ${anchor?.matchText || ''}`)
+    .join(' ');
+}
+
+function hasExplicitFillTarget(task) {
+  const text = getTaskAnchorText(task);
+  return /[□■☑]/.test(text)
+    || /[“"]\s*[”"]/.test(text)
+    || /[_＿]{1,}/.test(text)
+    || /年\s*月\s*日/.test(text)
+    || /[ \t\u00A0]{2,}(?:[。；;，,、）)]|元|万元|日历天|个标段|个|天|%|％)/.test(text);
+}
+
+function isOptionOnlyCompoundWithoutTarget(task, value) {
+  if (normalizeString(task?.type) !== 'compound') return false;
+  const selected = normalizeChoiceValueSet(value, task?.options || []);
+  if (!selected.size) return false;
+  return !removeSelectedOptionsFromValue(value, selected) && !hasExplicitFillTarget(task);
+}
+
+function applyChoiceMarkersNearParagraph(paragraphs, paragraphIndex, task, value) {
+  const options = Array.isArray(task?.options) ? task.options.map(normalizeString).filter(Boolean) : [];
+  if (!options.length) return false;
+  for (let offset = 0; offset <= 3; offset += 1) {
+    const item = paragraphs[paragraphIndex + offset];
+    if (!item) continue;
+    if (!/[□■☑]/.test(item.rawText || item.text || '')) continue;
+    const result = applyChoiceMarkersToParagraph(item.paragraph, task, value);
+    if (result.handled) {
+      refreshParagraphIndexItem(item);
+      return true;
+    }
+  }
+  return false;
+}
+
+function indexPageTasksByKey(pageTaskPack) {
+  const byKey = new Map();
+  (Array.isArray(pageTaskPack?.pages) ? pageTaskPack.pages : []).forEach((page, pageIndex) => {
+    (Array.isArray(page.tasks) ? page.tasks : []).forEach((task, taskIndex) => {
+      byKey.set(normalizeFieldKey(task.key), {
+        ...task,
+        page: Number(page.page || task.page || 0),
+        pageTitle: page.pageTitle || task.pageTitle || `第 ${page.page || 0} 页`,
+        _pageIndex: pageIndex,
+        _taskIndex: taskIndex,
+      });
+    });
+  });
+  return byKey;
+}
+
+function createDocxExportItems(pageTaskPack, fillPack) {
+  const taskByKey = indexPageTasksByKey(pageTaskPack);
+  return (Array.isArray(fillPack?.results) ? fillPack.results : [])
+    .map((result, resultIndex) => {
+      const key = normalizeFieldKey(result?.key);
+      const task = taskByKey.get(key);
+      return {
+        key,
+        result,
+        task,
+        resultIndex,
+      };
+    })
+    .filter((item) => item.task && normalizeString(item.result?.value) && !['missing', 'error', 'waiting', 'running'].includes(normalizeString(item.result?.status)))
+    .sort((first, second) => {
+      const pageDiff = Number(first.task.page || 0) - Number(second.task.page || 0);
+      if (pageDiff) return pageDiff;
+      const taskDiff = Number(first.task._taskIndex || 0) - Number(second.task._taskIndex || 0);
+      return taskDiff || first.resultIndex - second.resultIndex;
+    });
+}
+
+function ensureDocxExtension(filePath) {
+  return path.extname(filePath).toLowerCase() === '.docx' ? filePath : `${filePath}.docx`;
+}
+
 function ensureStateShape(state) {
   const empty = createEmptyState();
   const templateTaskPack = {
@@ -3224,6 +3776,116 @@ function createProcurementAgentService({ app, configStore, aiService }) {
     return savePageTaskFillPack(app, template.id, nextFillPack);
   }
 
+  async function exportGeneratedWord(payload = {}) {
+    const state = await loadState();
+    const templateId = normalizeString(payload?.templateId) || state.activeTemplateId;
+    const template = state.templateLibrary.find((item) => item.id === templateId)
+      || state.templateLibrary.find((item) => item.id === state.activeTemplateId);
+    if (!template) {
+      return { success: false, message: '请先选择采购模板' };
+    }
+
+    const sourcePath = template.normalizedPath || template.storedPath;
+    if (!sourcePath) {
+      return { success: false, message: '当前模板没有可导出的 Word 源文件' };
+    }
+    try {
+      await fs.access(sourcePath);
+    } catch {
+      return { success: false, message: `模板 Word 源文件不存在：${sourcePath}` };
+    }
+
+    const pageTaskPack = await readTemplatePageTaskPack(app, template);
+    const fillPack = await readStoredPageTaskFillPack(app, template.id);
+    if (!pageTaskPack?.pages?.length) {
+      return { success: false, message: '当前模板没有页面任务包，请先执行模板 AI 解析' };
+    }
+    if (!fillPack?.results?.length) {
+      return { success: false, message: '当前模板还没有填充结果，请先执行招标文件智能生成' };
+    }
+
+    const exportItems = createDocxExportItems(pageTaskPack, fillPack);
+    if (!exportItems.length) {
+      return { success: false, message: '没有可写入 Word 的已填充任务' };
+    }
+
+    let outputPath = normalizeString(payload?.outputPath);
+    if (!outputPath) {
+      const defaultDir = app?.getPath ? app.getPath('documents') : process.env.USERPROFILE || process.cwd();
+      const projectName = normalizeString(state.task?.projectName) || normalizeString(fillPack.templateName) || template.name || '询比采购文件';
+      const defaultFilename = `${safeFileStem(projectName)}-生成稿.docx`;
+      const saveResult = await dialog.showSaveDialog({
+        title: '导出询比采购文件 Word',
+        defaultPath: path.join(defaultDir, defaultFilename),
+        filters: [{ name: 'Word 文档', extensions: ['docx'] }],
+      });
+
+      if (saveResult.canceled || !saveResult.filePath) {
+        return { success: false, canceled: true, message: '已取消导出' };
+      }
+      outputPath = saveResult.filePath;
+    }
+    outputPath = ensureDocxExtension(outputPath);
+    const zip = await JSZip.loadAsync(await fs.readFile(sourcePath));
+    const documentXml = await readDocxXml(zip, 'word/document.xml');
+    if (!documentXml) {
+      throw new Error('模板文件缺少 word/document.xml，无法导出');
+    }
+
+    const doc = parseXml(documentXml);
+    const paragraphs = createDocxParagraphIndex(doc);
+    const perPageParagraphStep = Math.max(1, Math.floor(paragraphs.length / Math.max(1, Number(pageTaskPack.pageCount || 1))));
+    let cursor = 0;
+    let appliedCount = 0;
+    const unmatched = [];
+
+    exportItems.forEach((item) => {
+      const pageNumber = Math.max(1, Number(item.task.page || item.result.page || 1));
+      const pageStartIndex = Math.max(0, Math.min(paragraphs.length - 1, Math.floor((pageNumber - 1) * perPageParagraphStep)));
+      const startIndex = Math.max(cursor, pageStartIndex);
+      const found = findParagraphForTask(paragraphs, item.task, startIndex, item.result.value);
+      if (!found?.item) {
+        unmatched.push(item.result.label || item.task.label || item.key);
+        return;
+      }
+
+      if (isOptionOnlyCompoundWithoutTarget(item.task, item.result.value)) {
+        unmatched.push(item.result.label || item.task.label || item.key);
+        return;
+      }
+
+      const type = normalizeString(item.task?.type || item.result?.type || 'blank');
+      const changed = ['choice', 'multiChoice'].includes(type)
+        ? applyChoiceMarkersNearParagraph(paragraphs, found.item.index, item.task, normalizeString(item.result.value))
+        : applyTaskFillToParagraph(doc, found.item.paragraph, item.task, normalizeString(item.result.value), found.anchorRange);
+      if (!changed) {
+        unmatched.push(item.result.label || item.task.label || item.key);
+        return;
+      }
+      appliedCount += 1;
+      cursor = Math.min(paragraphs.length - 1, found.item.index + 1);
+      refreshParagraphIndexItem(found.item);
+    });
+
+    zip.file('word/document.xml', serializeXml(doc));
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    await fs.writeFile(outputPath, await zip.generateAsync({ type: 'nodebuffer' }));
+
+    const message = unmatched.length
+      ? `Word 已导出，已写入 ${appliedCount}/${exportItems.length} 项；${unmatched.length} 项未定位，请打开文档核对。`
+      : `Word 已导出，已写入 ${appliedCount} 项填充结果。`;
+
+    return {
+      success: true,
+      path: outputPath,
+      filePath: outputPath,
+      message,
+      appliedCount,
+      totalCount: exportItems.length,
+      unmatched,
+    };
+  }
+
   async function fillPageTasksWithAi(payload = {}) {
     const state = await loadState();
     const markdown = await readDemandMarkdown();
@@ -3727,6 +4389,7 @@ function createProcurementAgentService({ app, configStore, aiService }) {
     readTemplatePageTasks,
     readPageTaskFillPack,
     updatePageTaskFillResult,
+    exportGeneratedWord,
     analyzeTemplateWithAi,
     fillPageTasksWithAi,
     selectTemplate,

@@ -478,6 +478,23 @@ function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGe
     setStage('preview');
   };
 
+  const exportGeneratedWord = async () => {
+    if (!activeTemplate) {
+      showToast('请先选择采购模板。', 'info');
+      return;
+    }
+    if (!window.yibiao?.procurementAgent.exportGeneratedWord) {
+      showToast('当前客户端还未启用 Word 导出接口，请重启客户端后再试。', 'error');
+      return;
+    }
+    const result = await window.yibiao.procurementAgent.exportGeneratedWord({ templateId: activeTemplate.id });
+    if (result.canceled) {
+      showToast(result.message || '已取消导出', 'info');
+      return;
+    }
+    showToast(result.message || (result.success ? 'Word 已导出' : 'Word 导出失败'), result.success ? 'success' : 'error');
+  };
+
   if (stage === 'preview') {
     return (
       <GenerationPreview
@@ -498,6 +515,7 @@ function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGe
         reviewCount={reviewCount}
         locatedAnchorCount={locatedAnchorCount}
         onFillPackChange={setFillPack}
+        onExportWord={exportGeneratedWord}
         onBack={() => setStage(completedCount >= taskRows.length ? 'done' : 'setup')}
         onNavigate={onNavigate}
       />
@@ -826,6 +844,7 @@ function GenerationPreview({
   reviewCount,
   locatedAnchorCount,
   onFillPackChange,
+  onExportWord,
   onBack,
   onNavigate,
 }: {
@@ -846,11 +865,13 @@ function GenerationPreview({
   reviewCount: number;
   locatedAnchorCount: number;
   onFillPackChange: (fillPack: ProcurementPageTaskFillPack) => void;
+  onExportWord: () => Promise<void>;
   onBack: () => void;
   onNavigate: (section: SectionId) => void;
 }) {
   const [sourceTaskKey, setSourceTaskKey] = useState('');
   const [savingTaskKey, setSavingTaskKey] = useState('');
+  const [exportingWord, setExportingWord] = useState(false);
   const currentRows = useMemo(
     () => visibleRows.filter((row) => row.page === currentPdfPage),
     [currentPdfPage, visibleRows],
@@ -914,6 +935,14 @@ function GenerationPreview({
       setSavingTaskKey('');
     }
   }, [onFillPackChange, template?.id]);
+  const handleExportWord = useCallback(async () => {
+    setExportingWord(true);
+    try {
+      await onExportWord();
+    } finally {
+      setExportingWord(false);
+    }
+  }, [onExportWord]);
 
   return (
     <section className="procurement-template-reader-page procurement-generation-preview-page">
@@ -933,8 +962,12 @@ function GenerationPreview({
           <span className="procurement-template-reader-chip">{reviewCount} 项需人工确认</span>
           <button type="button" className="procurement-secondary-button" onClick={() => onNavigate('procurement-template-detail')}>查看模板详情</button>
           <button type="button" className="procurement-secondary-button">重新生成</button>
-          <button type="button" className="procurement-primary-button">导出 Word</button>
-          <button type="button" className="procurement-secondary-button">导出 PDF</button>
+          <button type="button" className="procurement-primary-button" disabled={exportingWord} onClick={() => void handleExportWord()}>
+            {exportingWord ? '导出中...' : '导出 Word'}
+          </button>
+          <button type="button" className="procurement-secondary-button" disabled title="先完成 Word 导出后再生成 PDF">
+            导出 PDF
+          </button>
         </div>
       </header>
 
