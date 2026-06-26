@@ -8406,6 +8406,159 @@ button {
   opacity: 0.72;
 }
 
+.model-provider-layout {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 18px;
+  padding: 0 36px 32px;
+}
+
+.model-provider-list,
+.model-provider-editor {
+  min-width: 0;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid var(--yb-border-soft);
+  border-radius: 20px;
+  box-shadow: 0 16px 36px rgba(36, 48, 72, 0.06);
+}
+
+.model-provider-list {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 14px;
+}
+
+.model-provider-list-head {
+  display: grid;
+  gap: 6px;
+  padding: 8px 8px 10px;
+}
+
+.model-provider-list-head strong {
+  color: var(--yb-text);
+  font-size: 17px;
+}
+
+.model-provider-list-head span {
+  color: var(--yb-text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.model-provider-card {
+  position: relative;
+  display: grid;
+  width: 100%;
+  align-content: start;
+  gap: 7px;
+  min-height: 118px;
+  padding: 14px;
+  color: var(--yb-text);
+  text-align: left;
+  background: #f8fafd;
+  border: 1px solid var(--yb-border-soft);
+  border-radius: 14px;
+}
+
+.model-provider-card:hover,
+.model-provider-card.is-active {
+  background: #edf5ff;
+  border-color: rgba(33, 116, 253, 0.28);
+}
+
+.model-provider-card.is-active {
+  box-shadow: inset 4px 0 0 var(--yb-primary);
+}
+
+.model-provider-card span {
+  color: #0f2347;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.model-provider-card strong,
+.model-provider-card small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-provider-card strong {
+  color: var(--yb-text);
+  font-size: 13px;
+}
+
+.model-provider-card small {
+  color: var(--yb-text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.model-provider-card em {
+  justify-self: start;
+  margin-top: 2px;
+  padding: 4px 8px;
+  color: #536176;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 900;
+  background: #eef2f7;
+  border-radius: 999px;
+}
+
+.model-provider-card.is-configured em {
+  color: #08664a;
+  background: #e8f8f1;
+}
+
+.model-provider-card.is-active em {
+  color: #174a91;
+  background: #dbeafe;
+}
+
+.model-provider-editor {
+  display: grid;
+  align-content: start;
+}
+
+.model-provider-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 20px;
+  background: linear-gradient(135deg, #ffffff 0%, #f0f7ff 100%);
+  border-bottom: 1px solid var(--yb-border-soft);
+}
+
+.model-provider-editor-head div {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.model-provider-editor-head strong {
+  color: #0f2347;
+  font-size: 18px;
+}
+
+.model-provider-editor-head span {
+  color: var(--yb-text-soft);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.model-provider-settings-list {
+  border-top: 0;
+}
+
+.model-provider-settings-list .settings-row {
+  padding-right: 28px;
+  padding-left: 28px;
+}
+
 .inline-spinner {
   width: 15px;
   height: 15px;

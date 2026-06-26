@@ -5,10 +5,11 @@ import type { FloatingToolbarGroup } from '../../../shared/ui';
 import type { AiRequestMode, ClientConfig, FileParserProvider, ImageModelConfig, ImageModelProfiles, ImageModelProvider, ImageModelStatus, TextModelConfig, TextModelProfiles, TextModelProvider } from '../../../shared/types';
 import type { SettingsPageState } from '../types';
 
-type SettingsTab = 'general' | 'text-model' | 'image-model' | 'file-parser' | 'about';
+type SettingsTab = 'general' | 'model-provider' | 'text-model' | 'image-model' | 'file-parser' | 'about';
 
 const settingsTabs: Array<{ id: SettingsTab; label: string }> = [
   { id: 'general', label: '通用' },
+  { id: 'model-provider', label: '供应商管理' },
   { id: 'text-model', label: '文本模型' },
   { id: 'image-model', label: '生图模型' },
   { id: 'file-parser', label: '文件解析' },
@@ -22,6 +23,14 @@ const textModelProviders: Array<{ value: TextModelProvider; label: string }> = [
   { value: 'longcat', label: '龙猫' },
   { value: 'jinlong', label: '其他 OpenAI 兼容接口' },
 ];
+
+const textModelProviderDescriptions: Record<TextModelProvider, string> = {
+  custom: '本地模型、LiteLLM、Ollama 代理或任意 OpenAI 兼容服务',
+  volcengine: '火山方舟 OpenAI 兼容接口，适合企业云端推理',
+  deepseek: 'DeepSeek 官方或兼容代理服务',
+  longcat: '龙猫模型服务接口',
+  jinlong: '其他自建或第三方 OpenAI 兼容文本接口',
+};
 
 const aiRequestModeOptions: Array<{ value: AiRequestMode; label: string }> = [
   { value: 'normal', label: '普通请求' },
@@ -492,6 +501,10 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
     }));
   };
 
+  const switchTextModelProvider = (provider: TextModelProvider) => {
+    updateTextModelProvider(provider);
+  };
+
   const updateTextModelConfig = (partial: Partial<Omit<SettingsPageState['textModel'], 'provider'>>, options: { clearModels?: boolean } = {}) => {
     if (options.clearModels) {
       setTextModels([]);
@@ -510,6 +523,24 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
         };
       })(),
     }));
+  };
+
+  const resetCurrentTextProviderToDefault = () => {
+    setTextModels([]);
+    setState((prev) => {
+      const textModel = {
+        provider: prev.textModel.provider,
+        ...normalizeTextModelProfile(prev.textModel.provider, textProviderDefaults[prev.textModel.provider]),
+      };
+      return {
+        ...prev,
+        textModel,
+        textModelProfiles: {
+          ...prev.textModelProfiles,
+          [prev.textModel.provider]: textProfileFromState(textModel),
+        },
+      };
+    });
   };
 
   const openTextProviderApiKeyPage = async () => {
@@ -787,7 +818,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
       return false;
     }
 
-    if (activeTab === 'text-model') {
+    if (activeTab === 'text-model' || activeTab === 'model-provider') {
       return JSON.stringify({
         provider: state.textModel.provider,
         profiles: getCurrentTextModelProfiles(),
@@ -867,7 +898,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
       }
       return;
     }
-    if (activeTab === 'text-model') {
+    if (activeTab === 'text-model' || activeTab === 'model-provider') {
       await saveTextConfig();
       return;
     }
@@ -880,7 +911,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
     }
   };
 
-  const canSaveActiveTab = activeTab === 'general' || activeTab === 'text-model' || activeTab === 'image-model' || activeTab === 'file-parser';
+  const canSaveActiveTab = activeTab === 'general' || activeTab === 'model-provider' || activeTab === 'text-model' || activeTab === 'image-model' || activeTab === 'file-parser';
   const activeTabDirty = isActiveTabDirty();
   const currentTextProviderDefault = textProviderDefaults[state.textModel.provider];
   const imageModelStatus: ImageModelStatus = state.imageModel.status || 'untested';
@@ -1013,6 +1044,163 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                 </div>
               </div>
             )}
+          </div>
+        </section>
+      )}
+
+      {activeTab === 'model-provider' && (
+        <section className="settings-page-section">
+          <div className="settings-section-title">
+            <span />
+            <strong>供应商管理</strong>
+          </div>
+          <div className="model-provider-layout">
+            <aside className="model-provider-list">
+              <div className="model-provider-list-head">
+                <strong>模型服务商</strong>
+                <span>切换后保存即成为当前 AI 调用服务商</span>
+              </div>
+              {textModelProviders.map((provider) => {
+                const profile = state.textModel.provider === provider.value
+                  ? textProfileFromState(state.textModel)
+                  : normalizeTextModelProfile(provider.value, state.textModelProfiles[provider.value]);
+                const configured = Boolean(profile.base_url.trim() && profile.model_name.trim());
+                const active = state.textModel.provider === provider.value;
+                return (
+                  <button
+                    type="button"
+                    key={provider.value}
+                    className={`model-provider-card${active ? ' is-active' : ''}${configured ? ' is-configured' : ''}`}
+                    onClick={() => switchTextModelProvider(provider.value)}
+                  >
+                    <span>{provider.label}</span>
+                    <strong>{profile.model_name || '未配置模型'}</strong>
+                    <small>{profile.base_url || textModelProviderDescriptions[provider.value]}</small>
+                    <em>{active ? '当前使用' : configured ? '已配置' : '待配置'}</em>
+                  </button>
+                );
+              })}
+            </aside>
+
+            <article className="model-provider-editor">
+              <div className="model-provider-editor-head">
+                <div>
+                  <strong>{textModelProviders.find((provider) => provider.value === state.textModel.provider)?.label || '模型服务商'}</strong>
+                  <span>{textModelProviderDescriptions[state.textModel.provider]}</span>
+                </div>
+                <button type="button" className="inline-action" onClick={resetCurrentTextProviderToDefault}>
+                  恢复默认
+                </button>
+              </div>
+              <div className="settings-list model-provider-settings-list">
+                <label className="settings-row">
+                  <div className="settings-row-copy">
+                    <strong>服务提供商</strong>
+                    <span>选择服务商会加载该服务商已保存的 Base URL、API Key、模型和请求方式</span>
+                  </div>
+                  <select
+                    value={state.textModel.provider}
+                    onChange={(event) => switchTextModelProvider(event.target.value as TextModelProvider)}
+                  >
+                    {textModelProviders.map((provider) => (
+                      <option value={provider.value} key={provider.value}>{provider.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="settings-row">
+                  <div className="settings-row-copy">
+                    <strong>Base URL</strong>
+                    <span>OpenAI Like 接口地址，用于文本生成、模板解析和任务包填充</span>
+                  </div>
+                  <input
+                    type="text"
+                    value={state.textModel.base_url}
+                    placeholder={currentTextProviderDefault.base_url || '请输入兼容 OpenAI 的接口地址'}
+                    onChange={(event) => updateTextModelConfig({ base_url: event.target.value }, { clearModels: true })}
+                  />
+                </label>
+                <label className="settings-row">
+                  <div className="settings-row-copy">
+                    <strong>API Key</strong>
+                    <span>仅保存在本机配置文件中，调用模型时随请求发送给当前服务商</span>
+                  </div>
+                  <InputWithAction
+                    type="password"
+                    value={state.textModel.api_key}
+                    placeholder="请输入文本模型 API Key"
+                    onChange={(event) => updateTextModelConfig({ api_key: event.target.value }, { clearModels: true })}
+                    actionLabel="获取"
+                    actionTitle="打开当前服务商的 API Key 获取页面"
+                    actionDisabled={!textProviderApiKeyUrls[state.textModel.provider]}
+                    onAction={() => { void openTextProviderApiKeyPage(); }}
+                  />
+                </label>
+                <label className="settings-row">
+                  <div className="settings-row-copy">
+                    <strong>模型名称</strong>
+                    <span>可手动录入，也可从当前 Base URL 拉取可用模型</span>
+                  </div>
+                  <div className="settings-control-with-action">
+                    {textModels.length > 0 ? (
+                      <select
+                        value={state.textModel.model_name}
+                        onChange={(event) => updateTextModelConfig({ model_name: event.target.value })}
+                      >
+                        {textModels.map((model) => <option value={model} key={model}>{model}</option>)}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        value={state.textModel.model_name}
+                        placeholder="例如 gemma-4-31B_q4_0-it.gguf"
+                        onChange={(event) => updateTextModelConfig({ model_name: event.target.value })}
+                      />
+                    )}
+                    <button
+                      type="button"
+                      className="inline-action"
+                      onClick={fetchTextModels}
+                      disabled={loadingModels === 'text'}
+                    >
+                      {loadingModels === 'text' && <span className="inline-spinner" aria-hidden="true" />}
+                      {loadingModels === 'text' ? '获取中' : '获取'}
+                    </button>
+                    <button type="button" className="inline-action" onClick={testTextConfig} disabled={testingTextModel}>
+                      {testingTextModel && <span className="inline-spinner" aria-hidden="true" />}
+                      {testingTextModel ? '测试中' : '测试'}
+                    </button>
+                  </div>
+                </label>
+                <label className="settings-row">
+                  <div className="settings-row-copy">
+                    <strong>上下文长度限制</strong>
+                    <span>配置所选模型上下文长度，处理长文本时会自动截断并分批处理</span>
+                  </div>
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={state.textModel.context_length_limit}
+                    placeholder="8192"
+                    onChange={(event) => updateTextModelConfig({ context_length_limit: parseTextContextLengthInput(event.target.value) })}
+                  />
+                </label>
+                <label className="settings-row">
+                  <div className="settings-row-copy">
+                    <strong>请求方式</strong>
+                    <span>流式请求可显示模型输出进度；普通请求等待完整响应后返回</span>
+                  </div>
+                  <select
+                    value={state.textModel.request_mode}
+                    onChange={(event) => updateTextModelConfig({ request_mode: event.target.value as AiRequestMode })}
+                  >
+                    {aiRequestModeOptions.map((option) => (
+                      <option value={option.value} key={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </article>
           </div>
         </section>
       )}
