@@ -14,6 +14,7 @@ function registerProcurementAgentIpc({ procurementAgentService }) {
   ipcMain.handle('procurement-agent:read-page-task-fill-pack', (_event, payload) => procurementAgentService.readPageTaskFillPack(payload));
   ipcMain.handle('procurement-agent:update-page-task-fill-result', (_event, payload) => procurementAgentService.updatePageTaskFillResult(payload));
   ipcMain.handle('procurement-agent:export-generated-word', (_event, payload) => procurementAgentService.exportGeneratedWord(payload));
+  ipcMain.handle('procurement-agent:build-generated-preview', (_event, payload) => procurementAgentService.buildGeneratedPreview(payload));
   ipcMain.handle('procurement-agent:analyze-template-with-ai', (_event, payload) => procurementAgentService.analyzeTemplateWithAi(payload));
   ipcMain.handle('procurement-agent:fill-page-tasks-with-ai', (_event, payload) => procurementAgentService.fillPageTasksWithAi(payload));
   ipcMain.handle('procurement-agent:select-template', (_event, payload) => procurementAgentService.selectTemplate(payload));

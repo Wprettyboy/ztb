@@ -215,6 +215,8 @@ function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGe
   const [anchorLocations, setAnchorLocations] = useState<Record<string, TemplatePdfFieldLocation>>({});
   const [currentPdfPage, setCurrentPdfPage] = useState(1);
   const [modelRuntimeLabel, setModelRuntimeLabel] = useState('当前文本模型');
+  const [generatedPreviewPdfUrl, setGeneratedPreviewPdfUrl] = useState('');
+  const [buildingPreview, setBuildingPreview] = useState(false);
   const { showToast } = useToast();
 
   useEffect(() => {
@@ -359,6 +361,7 @@ function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGe
       const nextState = await window.yibiao.procurementAgent.selectTemplate({ templateId: template.id });
       setState(nextState);
       setFillPack(null);
+      setGeneratedPreviewPdfUrl('');
       setFillRuntime({
         status: 'idle',
         message: '已切换模板，点击开始填充后会调用当前文本模型。',
@@ -470,12 +473,30 @@ function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGe
     }
   };
 
-  const openPreview = () => {
-    if (!activeTemplate?.previewPdfUrl) {
-      showToast('当前模板缺少 PDF 预览，请回到模板库重新扫描。', 'error');
+  const openPreview = async () => {
+    if (!activeTemplate) {
+      showToast('请先选择采购模板。', 'info');
       return;
     }
-    setStage('preview');
+    if (!window.yibiao?.procurementAgent.buildGeneratedPreview) {
+      showToast('当前客户端还未启用生成稿预览接口，请重启客户端后再试。', 'error');
+      return;
+    }
+    setBuildingPreview(true);
+    try {
+      const result = await window.yibiao.procurementAgent.buildGeneratedPreview({ templateId: activeTemplate.id });
+      if (!result.success || !result.pdfUrl) {
+        showToast(result.message || '生成稿预览生成失败', 'error');
+        return;
+      }
+      setGeneratedPreviewPdfUrl(result.pdfUrl);
+      showToast(result.message || '生成稿预览已生成', result.unmatched?.length ? 'info' : 'success');
+      setStage('preview');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '生成稿预览生成失败', 'error');
+    } finally {
+      setBuildingPreview(false);
+    }
   };
 
   const exportGeneratedWord = async () => {
@@ -499,6 +520,7 @@ function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGe
     return (
       <GenerationPreview
         template={activeTemplate}
+        previewPdfUrl={generatedPreviewPdfUrl || activeTemplate?.previewPdfUrl || ''}
         pageTaskPack={pageTaskPack}
         pageTaskAnchors={pageTaskAnchors}
         selectedAnchorId={selectedAnchorId}
@@ -642,8 +664,8 @@ function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGe
                     开始填充
                   </button>
                 )}
-                <button type="button" className="procurement-primary-button" disabled={!taskRows.length || !fillPack} onClick={openPreview}>
-                  查看预览
+                <button type="button" className="procurement-primary-button" disabled={!taskRows.length || !fillPack || buildingPreview} onClick={() => void openPreview()}>
+                  {buildingPreview ? '生成预览中...' : '查看预览'}
                 </button>
               </div>
             </aside>
@@ -828,6 +850,7 @@ function rowStatusLabel(status: GenerationTaskRow['status']) {
 
 function GenerationPreview({
   template,
+  previewPdfUrl,
   pageTaskPack,
   pageTaskAnchors,
   selectedAnchorId,
@@ -849,6 +872,7 @@ function GenerationPreview({
   onNavigate,
 }: {
   template?: ProcurementTemplateItem;
+  previewPdfUrl: string;
   pageTaskPack: ProcurementTemplatePageTaskPack | null;
   pageTaskAnchors: TemplatePdfPageTaskAnchorTarget[];
   selectedAnchorId: string;
@@ -892,7 +916,7 @@ function GenerationPreview({
     onCurrentPdfPageChange(page);
   }, [onCurrentPdfPageChange]);
   const selectedRow = selectedTaskContext
-    ? visibleRows.find((row) => row.page === selectedTaskContext.page.page && row.label === selectedTaskContext.task.label)
+    ? visibleRows.find((row) => rowKeyWithoutIndex(row.id) === selectedTaskContext.task.key)
     : undefined;
   const sourceTask = useMemo(() => {
     if (!sourceTaskKey && selectedTaskContext?.task) return selectedTaskContext.task;
@@ -973,10 +997,10 @@ function GenerationPreview({
 
       <main className="procurement-generation-preview-layout">
         <article className="procurement-generation-preview-document">
-          {template?.previewPdfUrl ? (
+          {previewPdfUrl ? (
             <OpenSourcePdfHighlighterPreview
-              pdfUrl={template.previewPdfUrl}
-              templateId={template.id}
+              pdfUrl={previewPdfUrl}
+              templateId={template?.id || ''}
               fields={emptyTemplateFields}
               selectedFieldId=""
               onSelectedFieldChange={noopFieldChange}
@@ -988,7 +1012,7 @@ function GenerationPreview({
               pageTaskFillValues={fillValueMap}
             />
           ) : (
-            <div className="procurement-empty-mini">当前模板缺少 PDF 预览，请返回模板库重新扫描。</div>
+            <div className="procurement-empty-mini">当前生成稿缺少 PDF 预览，请返回处理进度重新生成。</div>
           )}
         </article>
 

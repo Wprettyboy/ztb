@@ -805,6 +805,10 @@ function getTemplateFillRunDir(app, templateId, runId) {
   return path.join(getTemplateTaskPackDir(app, templateId), 'fill-runs', safeFileStem(runId).replace(/\s+/g, '-'));
 }
 
+function getTemplateExportRunDir(app, templateId, runId) {
+  return path.join(getTemplateTaskPackDir(app, templateId), 'export-runs', safeFileStem(runId).replace(/\s+/g, '-'));
+}
+
 function safeFileStem(value) {
   return path.basename(String(value || 'template'), path.extname(String(value || 'template')))
     .replace(/[<>:"/\\|?*\x00-\x1F]+/g, ' ')
@@ -2808,6 +2812,124 @@ function createPageTaskFillPackSummary(fillPack) {
   };
 }
 
+function stripHtmlTagsToText(value) {
+  return String(value || '')
+    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+    .replace(/<\s*\/p\s*>/gi, '\n')
+    .replace(/<\s*\/tr\s*>/gi, '\n')
+    .replace(/<\s*\/t[dh]\s*>/gi, ' ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+}
+
+function cleanExportPlainText(value) {
+  return stripHtmlTagsToText(value)
+    .replace(/\*\*/g, '')
+    .replace(/^\s{0,3}#{1,6}\s*/gm, '')
+    .replace(/\|/g, ' ')
+    .replace(/[ \t\u00A0]+/g, ' ')
+    .replace(/\s*\n\s*/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function sanitizeFillValueForExport(task, result) {
+  const rawValue = String(result?.value ?? '');
+  const normalizedRaw = normalizeString(rawValue);
+  if (!normalizedRaw) {
+    return { ok: false, value: '', reason: '填充值为空' };
+  }
+
+  const hasHtmlTable = /<\s*table\b/i.test(rawValue);
+  const hasDenseHtml = /<\/?(?:thead|tbody|tr|td|th|p|strong|h[1-6])\b/i.test(rawValue);
+  const hasMarkdownTable = /^\s*\|.+\|\s*$/m.test(rawValue) || /\n\s*\|?\s*:?-{3,}:?\s*\|/m.test(rawValue);
+  const cleaned = cleanExportPlainText(rawValue);
+  const taskText = taskFillText(task);
+  const type = normalizeString(task?.type || result?.type || 'blank');
+
+  if (!cleaned) {
+    return { ok: false, value: '', reason: '填充值清洗后为空' };
+  }
+  if (hasHtmlTable || hasMarkdownTable) {
+    return { ok: false, value: cleaned.slice(0, 240), reason: '疑似整表/Markdown 表格污染，已跳过写入' };
+  }
+  if (hasDenseHtml && cleaned.length > 160) {
+    return { ok: false, value: cleaned.slice(0, 240), reason: '疑似 HTML 片段污染，已跳过写入' };
+  }
+  if (/<[^>]{1,80}>/.test(cleaned)) {
+    return { ok: false, value: cleaned.slice(0, 240), reason: '清洗后仍包含 HTML 标签，已跳过写入' };
+  }
+  if (cleaned.length > 1200) {
+    return { ok: false, value: cleaned.slice(0, 240), reason: '填充值过长，疑似模板片段污染，已跳过写入' };
+  }
+  if (type === 'choice') {
+    const options = Array.isArray(task?.options) ? task.options.map(normalizeString).filter(Boolean) : [];
+    const option = exactOptionFromValue(cleaned, options);
+    if (options.length && !option) {
+      return { ok: false, value: cleaned, reason: '选择题填充值不在可选项中，已跳过写入' };
+    }
+    return { ok: true, value: option || cleaned, reason: normalizedRaw === option ? '' : '已按选项归一化导出值' };
+  }
+  if (type === 'multiChoice') {
+    const selected = [...normalizeChoiceValueSet(cleaned, task?.options || [])];
+    if (Array.isArray(task?.options) && task.options.length && !selected.length) {
+      return { ok: false, value: cleaned, reason: '多选题填充值不在可选项中，已跳过写入' };
+    }
+    return { ok: true, value: selected.length ? selected.join('、') : cleaned, reason: selected.length ? '已按多选项归一化导出值' : '' };
+  }
+  if (/付款|支付|结算|质保金/.test(taskText) && cleaned.length > 500) {
+    return { ok: false, value: cleaned.slice(0, 240), reason: '付款类字段过长，疑似整段模板污染，已跳过写入' };
+  }
+  return { ok: true, value: cleaned, reason: '' };
+}
+
+function inferReviewMethodFromResults(exportItems) {
+  let comprehensive = 0;
+  let lowest = 0;
+  const reviewItems = exportItems.filter((item) => /评审方法|评审办法章节选择|综合评估法章节启用/.test(taskFillText(item.task)));
+  reviewItems.forEach((item) => {
+    const value = normalizeString(item.sanitizedValue || item.result?.value || '');
+    const evidence = normalizeString(item.result?.evidence || '');
+    const taskText = taskFillText(item.task);
+    if (/■\s*综合评估法|☑\s*综合评估法/.test(evidence)) comprehensive += 4;
+    if (/■\s*(?:经评审的)?最低投标价法|☑\s*(?:经评审的)?最低投标价法/.test(evidence)) lowest += 4;
+    if (value === '综合评估法') comprehensive += 2;
+    if (value === '经评审的最低投标价法') lowest += 2;
+    if (/综合评估法章节启用/.test(taskText) && value === '启用') comprehensive += 2;
+    if (/综合评估法章节启用/.test(taskText) && value === '不启用') lowest += 1;
+  });
+  if (comprehensive > lowest) return '综合评估法';
+  if (lowest > comprehensive) return '经评审的最低投标价法';
+  return '';
+}
+
+function reconcileExportReviewMethodItems(exportItems) {
+  const method = inferReviewMethodFromResults(exportItems);
+  if (!method) return exportItems;
+  return exportItems.map((item) => {
+    const taskText = taskFillText(item.task);
+    if (!/评审方法|评审办法章节选择|综合评估法章节启用/.test(taskText)) return item;
+    if (/综合评估法章节启用/.test(taskText)) {
+      const value = method === '综合评估法' ? '启用' : '不启用';
+      return {
+        ...item,
+        sanitizedValue: value,
+        exportWarnings: [...(item.exportWarnings || []), `评审方法统一为${method}，章节启用值归一为${value}`],
+      };
+    }
+    return {
+      ...item,
+      sanitizedValue: method,
+      exportWarnings: [...(item.exportWarnings || []), `评审方法统一为${method}`],
+    };
+  });
+}
+
 function escapeRegExp(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -2983,17 +3105,30 @@ function collectTaskAnchorCandidates(task) {
   return [...new Set(candidates)].sort((first, second) => second.length - first.length);
 }
 
+function collectTaskAnchorOnlyCandidates(task) {
+  const candidates = [];
+  (Array.isArray(task?.anchors) ? task.anchors : []).forEach((anchor) => {
+    [anchor?.sourceText, anchor?.matchText].forEach((value) => {
+      const text = normalizeString(value);
+      if (text && text.length >= 2) candidates.push(text);
+    });
+  });
+  return [...new Set(candidates)].sort((first, second) => second.length - first.length);
+}
+
 function collectPrioritizedTaskAnchorCandidates(task, value) {
   const all = collectTaskAnchorCandidates(task);
+  const anchors = collectTaskAnchorOnlyCandidates(task);
   const selectedOptions = normalizeChoiceValueSet(value, task?.options || []);
   const selectedNeedles = [...selectedOptions].map(normalizeLooseText).filter(Boolean);
   if (!selectedNeedles.length) {
-    return { preferred: [], all };
+    return { preferred: anchors, all };
   }
-  const preferred = all.filter((candidate) => {
+  const preferredAnchors = anchors.filter((candidate) => {
     const normalized = normalizeLooseText(candidate);
     return selectedNeedles.some((needle) => normalized.includes(needle));
   });
+  const preferred = preferredAnchors.length ? preferredAnchors : anchors;
   return {
     preferred,
     all,
@@ -3265,19 +3400,31 @@ function applyTaskFillToParagraph(doc, paragraph, task, value, anchorRange) {
   const choiceResult = applyChoiceMarkersToParagraph(paragraph, task, value);
   const type = normalizeString(task?.type || 'blank');
   if (['choice', 'multiChoice'].includes(type) && choiceResult.handled) {
-    return true;
+    return { changed: true, action: 'choice-markers', selected: [...choiceResult.selected], insertedText: '' };
   }
 
   const textValue = type === 'compound'
     ? choiceResult.textValue
     : normalizeString(value);
   if (!String(textValue || '').trim()) {
-    return Boolean(choiceResult.changed);
+    return {
+      changed: Boolean(choiceResult.changed),
+      action: choiceResult.changed ? 'choice-markers' : 'empty-value',
+      selected: [...choiceResult.selected],
+      insertedText: '',
+    };
   }
 
   const { fullText } = buildParagraphTextSegments(paragraph);
   const targetRange = findValueTargetRange(fullText, task, anchorRange);
-  return replaceParagraphTextRange(doc, paragraph, targetRange.start, targetRange.end, textValue) || choiceResult.changed;
+  const changed = replaceParagraphTextRange(doc, paragraph, targetRange.start, targetRange.end, textValue) || choiceResult.changed;
+  return {
+    changed,
+    action: changed ? (choiceResult.changed ? 'choice-markers-and-text' : 'text') : 'no-change',
+    selected: [...choiceResult.selected],
+    insertedText: textValue,
+    targetRange,
+  };
 }
 
 function getTaskAnchorText(task) {
@@ -3304,7 +3451,7 @@ function isOptionOnlyCompoundWithoutTarget(task, value) {
 
 function applyChoiceMarkersNearParagraph(paragraphs, paragraphIndex, task, value) {
   const options = Array.isArray(task?.options) ? task.options.map(normalizeString).filter(Boolean) : [];
-  if (!options.length) return false;
+  if (!options.length) return { changed: false, handled: false, reason: '任务没有可选项' };
   for (let offset = 0; offset <= 3; offset += 1) {
     const item = paragraphs[paragraphIndex + offset];
     if (!item) continue;
@@ -3312,10 +3459,62 @@ function applyChoiceMarkersNearParagraph(paragraphs, paragraphIndex, task, value
     const result = applyChoiceMarkersToParagraph(item.paragraph, task, value);
     if (result.handled) {
       refreshParagraphIndexItem(item);
-      return true;
+      return {
+        changed: result.changed,
+        handled: true,
+        paragraphIndex: item.index,
+        selected: [...result.selected],
+        insertedText: '',
+        reason: result.changed ? '' : '已找到选项但勾选状态无需变化',
+      };
     }
   }
-  return false;
+  return { changed: false, handled: false, reason: '附近段落未找到可匹配的选项勾选框' };
+}
+
+function applyEnableChoiceMarkerNearParagraph(paragraphs, paragraphIndex, task, value) {
+  const normalizedValue = normalizeString(value);
+  const shouldEnable = normalizedValue === '启用';
+  const shouldDisable = normalizedValue === '不启用';
+  if (!shouldEnable && !shouldDisable) {
+    return { changed: false, handled: false, reason: '启用类任务值必须为“启用”或“不启用”' };
+  }
+
+  const anchorText = (Array.isArray(task?.anchors) ? task.anchors : [])
+    .map((anchor) => normalizeString(anchor?.matchText || anchor?.sourceText))
+    .find((text) => /□|■|☑/.test(text)) || '';
+  const anchorLabel = anchorText.replace(/[□■☑]/g, '').trim();
+  const anchorNeedle = normalizeLooseText(anchorLabel);
+  for (let offset = -24; offset <= 8; offset += 1) {
+    const item = paragraphs[paragraphIndex + offset];
+    if (!item) continue;
+    const text = item.rawText || item.text || '';
+    if (!/[□■☑]/.test(text)) continue;
+    if (anchorNeedle && !normalizeLooseText(text).includes(anchorNeedle)) continue;
+    const { segments, fullText } = buildParagraphTextSegments(item.paragraph);
+    const checkboxIndex = fullText.search(/[□■☑]/);
+    if (checkboxIndex < 0) continue;
+    const segmentIndex = segments.findIndex((segment) => checkboxIndex >= segment.start && checkboxIndex < segment.end);
+    if (segmentIndex < 0) continue;
+    const chars = [...segments[segmentIndex].text];
+    const charIndex = checkboxIndex - segments[segmentIndex].start;
+    const nextChar = shouldEnable ? '■' : '□';
+    const changed = chars[charIndex] !== nextChar;
+    if (changed) {
+      chars[charIndex] = nextChar;
+      setWordTextNode(segments[segmentIndex].node, chars.join(''));
+      refreshParagraphIndexItem(item);
+    }
+    return {
+      changed,
+      handled: true,
+      paragraphIndex: item.index,
+      selected: [normalizedValue],
+      insertedText: '',
+      reason: changed ? '' : '章节勾选状态无需变化',
+    };
+  }
+  return { changed: false, handled: false, reason: '未找到章节标题前的勾选框' };
 }
 
 function indexPageTasksByKey(pageTaskPack) {
@@ -3336,7 +3535,7 @@ function indexPageTasksByKey(pageTaskPack) {
 
 function createDocxExportItems(pageTaskPack, fillPack) {
   const taskByKey = indexPageTasksByKey(pageTaskPack);
-  return (Array.isArray(fillPack?.results) ? fillPack.results : [])
+  const items = (Array.isArray(fillPack?.results) ? fillPack.results : [])
     .map((result, resultIndex) => {
       const key = normalizeFieldKey(result?.key);
       const task = taskByKey.get(key);
@@ -3354,10 +3553,186 @@ function createDocxExportItems(pageTaskPack, fillPack) {
       const taskDiff = Number(first.task._taskIndex || 0) - Number(second.task._taskIndex || 0);
       return taskDiff || first.resultIndex - second.resultIndex;
     });
+  const sanitizedItems = items.map((item) => {
+    const sanitized = sanitizeFillValueForExport(item.task, item.result);
+    return {
+      ...item,
+      sanitizedValue: sanitized.value,
+      exportSkipped: !sanitized.ok,
+      exportWarnings: sanitized.reason ? [sanitized.reason] : [],
+    };
+  });
+  return reconcileExportReviewMethodItems(sanitizedItems);
 }
 
 function ensureDocxExtension(filePath) {
   return path.extname(filePath).toLowerCase() === '.docx' ? filePath : `${filePath}.docx`;
+}
+
+async function buildGeneratedDocxFromTemplate({ app, template, state, outputPath, preview = false }) {
+  const sourcePath = template.normalizedPath || template.storedPath;
+  if (!sourcePath) {
+    return { success: false, message: '当前模板没有可导出的 Word 源文件' };
+  }
+  try {
+    await fs.access(sourcePath);
+  } catch {
+    return { success: false, message: `模板 Word 源文件不存在：${sourcePath}` };
+  }
+
+  const pageTaskPack = await readTemplatePageTaskPack(app, template);
+  const storedFillPack = await readStoredPageTaskFillPack(app, template.id);
+  const markdown = await fs.readFile(getMarkdownPath(app), 'utf-8').catch(() => '');
+  const sourceBlocks = state.sourceBlocks.length ? state.sourceBlocks : (markdown.trim() ? createSourceBlocks(markdown) : []);
+  const fillPack = await upgradeStoredPageTaskFillPackIfNeeded(app, template, storedFillPack, markdown, sourceBlocks, pageTaskPack);
+  if (!pageTaskPack?.pages?.length) {
+    return { success: false, message: '当前模板没有页面任务包，请先执行模板 AI 解析' };
+  }
+  if (!fillPack?.results?.length) {
+    return { success: false, message: '当前模板还没有填充结果，请先执行招标文件智能生成' };
+  }
+
+  const exportItems = createDocxExportItems(pageTaskPack, fillPack);
+  if (!exportItems.length) {
+    return { success: false, message: '没有可写入 Word 的已填充任务' };
+  }
+
+  const runId = createId(preview ? 'preview' : 'export');
+  const runDir = getTemplateExportRunDir(app, template.id, runId);
+  const zip = await JSZip.loadAsync(await fs.readFile(sourcePath));
+  const documentXml = await readDocxXml(zip, 'word/document.xml');
+  if (!documentXml) {
+    throw new Error('模板文件缺少 word/document.xml，无法导出');
+  }
+
+  const doc = parseXml(documentXml);
+  const paragraphs = createDocxParagraphIndex(doc);
+  const perPageParagraphStep = Math.max(1, Math.floor(paragraphs.length / Math.max(1, Number(pageTaskPack.pageCount || 1))));
+  let cursor = 0;
+  let appliedCount = 0;
+  const unmatched = [];
+  const traceItems = [];
+
+  exportItems.forEach((item) => {
+    const pageNumber = Math.max(1, Number(item.task.page || item.result.page || 1));
+    const pageStartIndex = Math.max(0, Math.min(paragraphs.length - 1, Math.floor((pageNumber - 1) * perPageParagraphStep)));
+    const startIndex = Math.max(cursor, pageStartIndex);
+    const trace = {
+      key: item.key,
+      label: item.result.label || item.task.label || item.key,
+      page: pageNumber,
+      status: item.result.status,
+      type: item.task.type,
+      rawValue: normalizeString(item.result.value),
+      sanitizedValue: item.sanitizedValue,
+      warnings: item.exportWarnings || [],
+      applied: false,
+      skipped: false,
+      unmatchedReason: '',
+      searchStartIndex: startIndex,
+      paragraphIndex: -1,
+      anchorCandidate: '',
+      beforeText: '',
+      afterText: '',
+      action: '',
+    };
+
+    if (item.exportSkipped) {
+      trace.skipped = true;
+      trace.unmatchedReason = item.exportWarnings?.[0] || '导出值未通过安全校验';
+      unmatched.push(trace.label);
+      traceItems.push(trace);
+      return;
+    }
+
+    const found = findParagraphForTask(paragraphs, item.task, startIndex, item.sanitizedValue);
+    if (!found?.item) {
+      trace.unmatchedReason = '未找到匹配锚点段落';
+      unmatched.push(trace.label);
+      traceItems.push(trace);
+      return;
+    }
+
+    trace.paragraphIndex = found.item.index;
+    trace.anchorCandidate = found.anchorRange?.candidate || found.candidates?.[0] || '';
+    trace.beforeText = found.item.rawText || found.item.text || '';
+
+    if (isOptionOnlyCompoundWithoutTarget(item.task, item.sanitizedValue)) {
+      trace.unmatchedReason = '复合任务仅有选项但模板缺少可写入目标';
+      unmatched.push(trace.label);
+      traceItems.push(trace);
+      return;
+    }
+
+    const type = normalizeString(item.task?.type || item.result?.type || 'blank');
+    let applied;
+    if (['choice', 'multiChoice'].includes(type) && /启用|不启用/.test((item.task?.options || []).join(' '))) {
+      applied = applyEnableChoiceMarkerNearParagraph(paragraphs, found.item.index, item.task, item.sanitizedValue);
+    } else if (['choice', 'multiChoice'].includes(type)) {
+      applied = applyChoiceMarkersNearParagraph(paragraphs, found.item.index, item.task, item.sanitizedValue);
+    } else {
+      applied = applyTaskFillToParagraph(doc, found.item.paragraph, item.task, item.sanitizedValue, found.anchorRange);
+    }
+
+    const changedOrHandled = Boolean(applied?.changed || applied?.handled);
+    if (!changedOrHandled) {
+      trace.unmatchedReason = applied?.reason || '定位后未产生写入变化';
+      unmatched.push(trace.label);
+      traceItems.push(trace);
+      return;
+    }
+
+    appliedCount += 1;
+    cursor = Math.min(paragraphs.length - 1, (Number(applied.paragraphIndex) >= 0 ? applied.paragraphIndex : found.item.index) + 1);
+    refreshParagraphIndexItem(found.item);
+    if (Number(applied.paragraphIndex) >= 0 && paragraphs[applied.paragraphIndex]) {
+      refreshParagraphIndexItem(paragraphs[applied.paragraphIndex]);
+      trace.afterText = paragraphs[applied.paragraphIndex].rawText || paragraphs[applied.paragraphIndex].text || '';
+    } else {
+      trace.afterText = found.item.rawText || found.item.text || '';
+    }
+    trace.applied = true;
+    trace.action = applied.action || (['choice', 'multiChoice'].includes(type) ? 'choice-markers' : 'text');
+    trace.targetRange = applied.targetRange || null;
+    trace.selected = applied.selected || [];
+    trace.insertedText = applied.insertedText || '';
+    traceItems.push(trace);
+  });
+
+  zip.file('word/document.xml', serializeXml(doc));
+  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  await fs.writeFile(outputPath, await zip.generateAsync({ type: 'nodebuffer' }));
+
+  const trace = {
+    runId,
+    mode: preview ? 'preview' : 'export',
+    generatedAt: nowIso(),
+    templateId: template.id,
+    templateName: template.name,
+    sourcePath,
+    outputPath,
+    fillPackRunId: fillPack.runId || '',
+    promptVersion: fillPack.promptVersion || '',
+    postprocessVersion: fillPack.postprocessVersion || '',
+    totalCount: exportItems.length,
+    appliedCount,
+    unmatched,
+    items: traceItems,
+  };
+  const tracePath = path.join(runDir, 'trace.json');
+  await writeJsonFile(tracePath, trace);
+
+  return {
+    success: true,
+    path: outputPath,
+    filePath: outputPath,
+    appliedCount,
+    totalCount: exportItems.length,
+    unmatched,
+    tracePath,
+    trace,
+    fillPack,
+  };
 }
 
 function ensureStateShape(state) {
@@ -4604,27 +4979,10 @@ function createProcurementAgentService({ app, configStore, aiService }) {
       return { success: false, message: `模板 Word 源文件不存在：${sourcePath}` };
     }
 
-    const pageTaskPack = await readTemplatePageTaskPack(app, template);
-    const storedFillPack = await readStoredPageTaskFillPack(app, template.id);
-    const markdown = await readDemandMarkdown();
-    const sourceBlocks = state.sourceBlocks.length ? state.sourceBlocks : (markdown.trim() ? createSourceBlocks(markdown) : []);
-    const fillPack = await upgradeStoredPageTaskFillPackIfNeeded(app, template, storedFillPack, markdown, sourceBlocks, pageTaskPack);
-    if (!pageTaskPack?.pages?.length) {
-      return { success: false, message: '当前模板没有页面任务包，请先执行模板 AI 解析' };
-    }
-    if (!fillPack?.results?.length) {
-      return { success: false, message: '当前模板还没有填充结果，请先执行招标文件智能生成' };
-    }
-
-    const exportItems = createDocxExportItems(pageTaskPack, fillPack);
-    if (!exportItems.length) {
-      return { success: false, message: '没有可写入 Word 的已填充任务' };
-    }
-
     let outputPath = normalizeString(payload?.outputPath);
     if (!outputPath) {
       const defaultDir = app?.getPath ? app.getPath('documents') : process.env.USERPROFILE || process.cwd();
-      const projectName = normalizeString(state.task?.projectName) || normalizeString(fillPack.templateName) || template.name || '询比采购文件';
+      const projectName = normalizeString(state.task?.projectName) || template.name || '询比采购文件';
       const defaultFilename = `${safeFileStem(projectName)}-生成稿.docx`;
       const saveResult = await dialog.showSaveDialog({
         title: '导出询比采购文件 Word',
@@ -4638,63 +4996,63 @@ function createProcurementAgentService({ app, configStore, aiService }) {
       outputPath = saveResult.filePath;
     }
     outputPath = ensureDocxExtension(outputPath);
-    const zip = await JSZip.loadAsync(await fs.readFile(sourcePath));
-    const documentXml = await readDocxXml(zip, 'word/document.xml');
-    if (!documentXml) {
-      throw new Error('模板文件缺少 word/document.xml，无法导出');
-    }
+    const buildResult = await buildGeneratedDocxFromTemplate({ app, template, state, outputPath, preview: false });
+    if (!buildResult.success) return buildResult;
 
-    const doc = parseXml(documentXml);
-    const paragraphs = createDocxParagraphIndex(doc);
-    const perPageParagraphStep = Math.max(1, Math.floor(paragraphs.length / Math.max(1, Number(pageTaskPack.pageCount || 1))));
-    let cursor = 0;
-    let appliedCount = 0;
-    const unmatched = [];
-
-    exportItems.forEach((item) => {
-      const pageNumber = Math.max(1, Number(item.task.page || item.result.page || 1));
-      const pageStartIndex = Math.max(0, Math.min(paragraphs.length - 1, Math.floor((pageNumber - 1) * perPageParagraphStep)));
-      const startIndex = Math.max(cursor, pageStartIndex);
-      const found = findParagraphForTask(paragraphs, item.task, startIndex, item.result.value);
-      if (!found?.item) {
-        unmatched.push(item.result.label || item.task.label || item.key);
-        return;
-      }
-
-      if (isOptionOnlyCompoundWithoutTarget(item.task, item.result.value)) {
-        unmatched.push(item.result.label || item.task.label || item.key);
-        return;
-      }
-
-      const type = normalizeString(item.task?.type || item.result?.type || 'blank');
-      const changed = ['choice', 'multiChoice'].includes(type)
-        ? applyChoiceMarkersNearParagraph(paragraphs, found.item.index, item.task, normalizeString(item.result.value))
-        : applyTaskFillToParagraph(doc, found.item.paragraph, item.task, normalizeString(item.result.value), found.anchorRange);
-      if (!changed) {
-        unmatched.push(item.result.label || item.task.label || item.key);
-        return;
-      }
-      appliedCount += 1;
-      cursor = Math.min(paragraphs.length - 1, found.item.index + 1);
-      refreshParagraphIndexItem(found.item);
-    });
-
-    zip.file('word/document.xml', serializeXml(doc));
-    await fs.mkdir(path.dirname(outputPath), { recursive: true });
-    await fs.writeFile(outputPath, await zip.generateAsync({ type: 'nodebuffer' }));
-
-    const message = unmatched.length
-      ? `Word 已导出，已写入 ${appliedCount}/${exportItems.length} 项；${unmatched.length} 项未定位，请打开文档核对。`
-      : `Word 已导出，已写入 ${appliedCount} 项填充结果。`;
+    const message = buildResult.unmatched.length
+      ? `Word 已导出，已写入 ${buildResult.appliedCount}/${buildResult.totalCount} 项；${buildResult.unmatched.length} 项未写入或需核对。`
+      : `Word 已导出，已写入 ${buildResult.appliedCount} 项填充结果。`;
 
     return {
       success: true,
       path: outputPath,
       filePath: outputPath,
       message,
-      appliedCount,
-      totalCount: exportItems.length,
-      unmatched,
+      appliedCount: buildResult.appliedCount,
+      totalCount: buildResult.totalCount,
+      unmatched: buildResult.unmatched,
+      tracePath: buildResult.tracePath,
+    };
+  }
+
+  async function buildGeneratedPreview(payload = {}) {
+    const state = await loadState();
+    const templateId = normalizeString(payload?.templateId) || state.activeTemplateId;
+    const template = state.templateLibrary.find((item) => item.id === templateId)
+      || state.templateLibrary.find((item) => item.id === state.activeTemplateId);
+    if (!template) {
+      return { success: false, message: '请先选择采购模板' };
+    }
+
+    const previewDir = path.join(getTemplateLibraryDir(app), template.id, 'generated-preview');
+    await fs.rm(previewDir, { recursive: true, force: true });
+    await fs.mkdir(previewDir, { recursive: true });
+    const outputPath = path.join(previewDir, `${safeFileStem(template.name || template.fileName)}-生成稿预览.docx`);
+    const buildResult = await buildGeneratedDocxFromTemplate({ app, template, state, outputPath, preview: true });
+    if (!buildResult.success) return buildResult;
+
+    const pdfPreview = await convertDocxToPdf(outputPath, previewDir);
+    if (!pdfPreview.success) {
+      return {
+        success: false,
+        message: `生成稿 Word 已生成，但 PDF 预览生成失败：${pdfPreview.message}`,
+        docxPath: outputPath,
+        tracePath: buildResult.tracePath,
+      };
+    }
+
+    return {
+      success: true,
+      message: buildResult.unmatched.length
+        ? `生成稿预览已生成，已写入 ${buildResult.appliedCount}/${buildResult.totalCount} 项；${buildResult.unmatched.length} 项未写入或需核对。`
+        : `生成稿预览已生成，已写入 ${buildResult.appliedCount} 项填充结果。`,
+      docxPath: outputPath,
+      pdfPath: pdfPreview.path,
+      pdfUrl: createProcurementAssetUrl(app, pdfPreview.path),
+      appliedCount: buildResult.appliedCount,
+      totalCount: buildResult.totalCount,
+      unmatched: buildResult.unmatched,
+      tracePath: buildResult.tracePath,
     };
   }
 
@@ -5277,6 +5635,7 @@ function createProcurementAgentService({ app, configStore, aiService }) {
     readPageTaskFillPack,
     updatePageTaskFillResult,
     exportGeneratedWord,
+    buildGeneratedPreview,
     analyzeTemplateWithAi,
     fillPageTasksWithAi,
     selectTemplate,

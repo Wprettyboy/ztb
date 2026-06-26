@@ -89,7 +89,8 @@ export interface YibiaoBridge {
     readTemplatePageTasks?: (payload?: { templateId?: string }) => Promise<import('../../features/procurement-agent/types').ProcurementTemplatePageTaskPack>;
     readPageTaskFillPack?: (payload?: { templateId?: string }) => Promise<ProcurementPageTaskFillPack | null>;
     updatePageTaskFillResult?: (payload: { templateId?: string; key: string; value: string; evidence?: string; reason?: string; status?: ProcurementPageTaskFillStatus; confidence?: number }) => Promise<ProcurementPageTaskFillPack>;
-    exportGeneratedWord?: (payload?: { templateId?: string; outputPath?: string }) => Promise<{ success: boolean; canceled?: boolean; message?: string; path?: string; filePath?: string; appliedCount?: number; totalCount?: number; unmatched?: string[] }>;
+    exportGeneratedWord?: (payload?: { templateId?: string; outputPath?: string }) => Promise<{ success: boolean; canceled?: boolean; message?: string; path?: string; filePath?: string; appliedCount?: number; totalCount?: number; unmatched?: string[]; tracePath?: string }>;
+    buildGeneratedPreview?: (payload?: { templateId?: string }) => Promise<{ success: boolean; message?: string; docxPath?: string; pdfPath?: string; pdfUrl?: string; appliedCount?: number; totalCount?: number; unmatched?: string[]; tracePath?: string }>;
     analyzeTemplateWithAi?: (payload?: { templateId?: string; concurrency?: number }) => Promise<ProcurementActionResult>;
     fillPageTasksWithAi?: (payload?: { templateId?: string; batchSize?: number }) => Promise<{ success: boolean; message?: string; state: ProcurementAgentState; fillPack?: ProcurementPageTaskFillPack }>;
     onEvent?: (callback: (event: unknown) => void) => () => void;

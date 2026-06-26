@@ -41,6 +41,7 @@ const bridge = {
     readPageTaskFillPack: (payload) => ipcRenderer.invoke('procurement-agent:read-page-task-fill-pack', payload),
     updatePageTaskFillResult: (payload) => ipcRenderer.invoke('procurement-agent:update-page-task-fill-result', payload),
     exportGeneratedWord: (payload) => ipcRenderer.invoke('procurement-agent:export-generated-word', payload),
+    buildGeneratedPreview: (payload) => ipcRenderer.invoke('procurement-agent:build-generated-preview', payload),
     analyzeTemplateWithAi: (payload) => ipcRenderer.invoke('procurement-agent:analyze-template-with-ai', payload),
     fillPageTasksWithAi: (payload) => ipcRenderer.invoke('procurement-agent:fill-page-tasks-with-ai', payload),
     onEvent: (callback) => {
