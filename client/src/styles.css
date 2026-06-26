@@ -14100,7 +14100,13 @@ button {
 
 .procurement-generation-preview-document {
   display: grid;
+  min-height: 640px;
   background: #e8edf4;
+}
+
+.procurement-generation-preview-document .procurement-open-source-pdf {
+  height: 100%;
+  min-height: 640px;
 }
 
 .procurement-generation-review-panel {
@@ -14252,9 +14258,12 @@ button {
     grid-template-columns: 1fr;
   }
 
-  .procurement-generation-main-grid,
-  .procurement-generation-preview-layout {
+  .procurement-generation-main-grid {
     grid-template-columns: 1fr;
+  }
+
+  .procurement-generation-preview-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
   }
 
   .procurement-generation-review-panel {
@@ -14281,6 +14290,15 @@ button {
 }
 
 @media (max-width: 900px) {
+  .procurement-generation-preview-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .procurement-generation-preview-document,
+  .procurement-generation-preview-document .procurement-open-source-pdf {
+    min-height: 620px;
+  }
+
   .procurement-generation-steps,
   .procurement-generation-summary,
   .procurement-generation-progress-metrics {

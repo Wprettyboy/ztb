@@ -851,6 +851,10 @@ function GenerationPreview({
     [currentPdfPage, pageTaskAnchors],
   );
   const fillValueMap = useMemo(() => buildFillValueMap(visibleRows), [visibleRows]);
+  const activePreviewAnchorId = useMemo(
+    () => (currentPageTaskAnchors.some((anchor) => anchor.id === selectedAnchorId) ? selectedAnchorId : ''),
+    [currentPageTaskAnchors, selectedAnchorId],
+  );
   const emptyTemplateFields = useMemo(() => [], []);
   const noopFieldChange = useCallback(() => undefined, []);
   const noopLocationsChange = useCallback(() => undefined, []);
@@ -896,7 +900,7 @@ function GenerationPreview({
               onFieldLocationsChange={noopLocationsChange}
               onPageChange={handlePreviewPageChange}
               pageTaskAnchors={currentPageTaskAnchors}
-              selectedPageTaskAnchorId={selectedAnchorId}
+              selectedPageTaskAnchorId={activePreviewAnchorId}
               onPageTaskAnchorLocationsChange={onAnchorLocationsChange}
               pageTaskFillValues={fillValueMap}
             />
