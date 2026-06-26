@@ -187,6 +187,69 @@ button {
   cursor: pointer;
 }
 
+.app-error-boundary {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 32px;
+  color: #172554;
+  background: #eef5ff;
+}
+
+.app-error-boundary section {
+  display: grid;
+  width: min(760px, 100%);
+  gap: 12px;
+  padding: 24px;
+  background: #fff;
+  border: 1px solid rgba(147, 197, 253, 0.68);
+  border-radius: 12px;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.12);
+}
+
+.app-error-boundary span {
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.app-error-boundary h1 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.app-error-boundary p {
+  margin: 0;
+  color: #475569;
+}
+
+.app-error-boundary pre {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+  color: #7f1d1d;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  background: #fff1f2;
+  border: 1px solid #fecdd3;
+  border-radius: 8px;
+}
+
+.app-error-boundary button {
+  width: fit-content;
+  min-height: 36px;
+  padding: 8px 14px;
+  color: #fff;
+  font-weight: 800;
+  background: #2563eb;
+  border: 0;
+  border-radius: 8px;
+}
+
 .app-shell {
   display: flex;
   width: 100vw;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import bidLogoUrl from '../../../assets/bid-logo.svg';
 import { trackPageView } from '../../../shared/analytics/analytics';
 import { useToast } from '../../../shared/ui';
@@ -305,15 +305,11 @@ function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGe
       setSelectedAnchorId('');
       return;
     }
-  const selectedStillExists = pageTaskAnchors.some((anchor) => anchor.id === selectedAnchorId);
-  if (!selectedStillExists) {
-    setSelectedAnchorId(pageTaskAnchors[0].id);
-  }
+    const selectedStillExists = pageTaskAnchors.some((anchor) => anchor.id === selectedAnchorId);
+    if (!selectedStillExists) {
+      setSelectedAnchorId(pageTaskAnchors[0].id);
+    }
   }, [pageTaskAnchors, selectedAnchorId]);
-
-  useEffect(() => {
-    setAnchorLocations({});
-  }, [currentPdfPage]);
 
   const loadState = async () => {
     if (!window.yibiao?.procurementAgent) return;
@@ -846,9 +842,21 @@ function GenerationPreview({
   onBack: () => void;
   onNavigate: (section: SectionId) => void;
 }) {
-  const currentRows = visibleRows.filter((row) => row.page === currentPdfPage);
-  const currentPageTaskAnchors = pageTaskAnchors.filter((anchor) => anchor.page === currentPdfPage);
+  const currentRows = useMemo(
+    () => visibleRows.filter((row) => row.page === currentPdfPage),
+    [currentPdfPage, visibleRows],
+  );
+  const currentPageTaskAnchors = useMemo(
+    () => pageTaskAnchors.filter((anchor) => anchor.page === currentPdfPage),
+    [currentPdfPage, pageTaskAnchors],
+  );
   const fillValueMap = useMemo(() => buildFillValueMap(visibleRows), [visibleRows]);
+  const emptyTemplateFields = useMemo(() => [], []);
+  const noopFieldChange = useCallback(() => undefined, []);
+  const noopLocationsChange = useCallback(() => undefined, []);
+  const handlePreviewPageChange = useCallback((page: number) => {
+    onCurrentPdfPageChange(page);
+  }, [onCurrentPdfPageChange]);
   const selectedRow = selectedTaskContext
     ? visibleRows.find((row) => row.page === selectedTaskContext.page.page && row.label === selectedTaskContext.task.label)
     : undefined;
@@ -882,11 +890,11 @@ function GenerationPreview({
             <OpenSourcePdfHighlighterPreview
               pdfUrl={template.previewPdfUrl}
               templateId={template.id}
-              fields={[]}
+              fields={emptyTemplateFields}
               selectedFieldId=""
-              onSelectedFieldChange={() => undefined}
-              onFieldLocationsChange={() => undefined}
-              onPageChange={onCurrentPdfPageChange}
+              onSelectedFieldChange={noopFieldChange}
+              onFieldLocationsChange={noopLocationsChange}
+              onPageChange={handlePreviewPageChange}
               pageTaskAnchors={currentPageTaskAnchors}
               selectedPageTaskAnchorId={selectedAnchorId}
               onPageTaskAnchorLocationsChange={onAnchorLocationsChange}
