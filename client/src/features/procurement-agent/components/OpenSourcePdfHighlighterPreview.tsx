@@ -36,6 +36,13 @@ export interface TemplatePdfPageTaskAnchorTarget {
   sourceText: string;
 }
 
+export interface TemplatePdfPageTaskFillTarget {
+  taskKey: string;
+  value: string;
+  status: string;
+  confidence?: number;
+}
+
 interface OpenSourcePdfHighlighterPreviewProps {
   pdfUrl: string;
   templateId?: string;
@@ -47,6 +54,7 @@ interface OpenSourcePdfHighlighterPreviewProps {
   pageTaskAnchors?: TemplatePdfPageTaskAnchorTarget[];
   selectedPageTaskAnchorId?: string;
   onPageTaskAnchorLocationsChange?: (locations: Record<string, TemplatePdfFieldLocation>) => void;
+  pageTaskFillValues?: Record<string, TemplatePdfPageTaskFillTarget | undefined>;
 }
 
 interface PdfOutlineNode {
@@ -69,6 +77,7 @@ interface OpenSourcePdfHighlighterBodyProps {
   locations: Record<string, TemplatePdfFieldLocation>;
   pageTaskAnchors: TemplatePdfPageTaskAnchorTarget[];
   pageTaskAnchorLocations: Record<string, TemplatePdfFieldLocation>;
+  pageTaskFillValues: Record<string, TemplatePdfPageTaskFillTarget | undefined>;
   detectedHighlightCount: number;
   selectedFieldId: string;
   selectedPageTaskAnchorId: string;
@@ -378,6 +387,10 @@ function clearFieldOverlays(pdfViewer: HTMLElement | null) {
   pdfViewer?.querySelectorAll('.procurement-field-overlay-layer').forEach((layer) => layer.remove());
 }
 
+function clearPageTaskOverlays(pdfViewer: HTMLElement | null) {
+  pdfViewer?.querySelectorAll('.procurement-page-task-overlay, .procurement-page-task-fill-overlay').forEach((overlay) => overlay.remove());
+}
+
 function renderFieldOverlays(
   host: HTMLElement | null,
   fields: ProcurementTemplateField[],
@@ -430,9 +443,11 @@ function renderPageTaskAnchorOverlays(
   anchors: TemplatePdfPageTaskAnchorTarget[],
   locations: Record<string, TemplatePdfFieldLocation>,
   selectedAnchorId: string,
+  fillValues: Record<string, TemplatePdfPageTaskFillTarget | undefined> = {},
 ) {
   const { pdfViewer } = getOpenSourceViewer(host);
   if (!pdfViewer) return false;
+  clearPageTaskOverlays(pdfViewer);
 
   anchors.forEach((anchor) => {
     const location = locations[anchor.id];
@@ -458,6 +473,16 @@ function renderPageTaskAnchorOverlays(
     marker.style.width = `${location.rect.width * 100}%`;
     marker.style.height = `${Math.max(location.rect.height * 100, 1.2)}%`;
     layer.appendChild(marker);
+
+    const fillValue = fillValues[anchor.taskKey];
+    if (!fillValue?.value) return;
+    const fillMarker = document.createElement('span');
+    fillMarker.className = `procurement-page-task-fill-overlay is-${fillValue.status || 'filled'}${anchor.id === selectedAnchorId ? ' is-active' : ''}`;
+    fillMarker.title = `${anchor.label}：${fillValue.value}`;
+    fillMarker.textContent = fillValue.value;
+    fillMarker.style.left = `${location.rect.left * 100}%`;
+    fillMarker.style.top = `${Math.min(96, (location.rect.top + location.rect.height) * 100 + 0.4)}%`;
+    layer.appendChild(fillMarker);
   });
 
   return true;
@@ -470,6 +495,7 @@ function OpenSourcePdfHighlighterBody({
   locations,
   pageTaskAnchors,
   pageTaskAnchorLocations,
+  pageTaskFillValues,
   detectedHighlightCount,
   selectedFieldId,
   selectedPageTaskAnchorId,
@@ -606,7 +632,7 @@ function OpenSourcePdfHighlighterBody({
       };
       updateCurrentPage();
       renderFieldOverlays(hostRef.current, fields, locations, selectedFieldId, onSelectedFieldChange);
-      renderPageTaskAnchorOverlays(hostRef.current, pageTaskAnchors, pageTaskAnchorLocations, selectedPageTaskAnchorId);
+      renderPageTaskAnchorOverlays(hostRef.current, pageTaskAnchors, pageTaskAnchorLocations, selectedPageTaskAnchorId, pageTaskFillValues);
       container.addEventListener('scroll', updateCurrentPage, { passive: true });
       cleanup = () => container.removeEventListener('scroll', updateCurrentPage);
     }, delay));
@@ -614,15 +640,15 @@ function OpenSourcePdfHighlighterBody({
       timers.forEach((timer) => window.clearTimeout(timer));
       cleanup?.();
     };
-  }, [fields, hostRef, locations, onPageChange, onSelectedFieldChange, pageTaskAnchorLocations, pageTaskAnchors, pdfDocument, selectedFieldId, selectedPageTaskAnchorId]);
+  }, [fields, hostRef, locations, onPageChange, onSelectedFieldChange, pageTaskAnchorLocations, pageTaskAnchors, pageTaskFillValues, pdfDocument, selectedFieldId, selectedPageTaskAnchorId]);
 
   useEffect(() => {
     const timers = [100, 500, 1200, 2200].map((delay) => window.setTimeout(() => {
       renderFieldOverlays(hostRef.current, fields, locations, selectedFieldId, onSelectedFieldChange);
-      renderPageTaskAnchorOverlays(hostRef.current, pageTaskAnchors, pageTaskAnchorLocations, selectedPageTaskAnchorId);
+      renderPageTaskAnchorOverlays(hostRef.current, pageTaskAnchors, pageTaskAnchorLocations, selectedPageTaskAnchorId, pageTaskFillValues);
     }, delay));
     return () => timers.forEach((timer) => window.clearTimeout(timer));
-  }, [fields, hostRef, locations, onSelectedFieldChange, pageTaskAnchorLocations, pageTaskAnchors, pdfDocument, selectedFieldId, selectedPageTaskAnchorId]);
+  }, [fields, hostRef, locations, onSelectedFieldChange, pageTaskAnchorLocations, pageTaskAnchors, pageTaskFillValues, pdfDocument, selectedFieldId, selectedPageTaskAnchorId]);
 
   useEffect(() => {
     const selectedLocation = selectedFieldId ? locations[selectedFieldId] : null;
@@ -729,6 +755,7 @@ export function OpenSourcePdfHighlighterPreview({
   pageTaskAnchors = [],
   selectedPageTaskAnchorId = '',
   onPageTaskAnchorLocationsChange,
+  pageTaskFillValues = {},
 }: OpenSourcePdfHighlighterPreviewProps) {
   const [loadableUrl, setLoadableUrl] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
@@ -815,14 +842,14 @@ export function OpenSourcePdfHighlighterPreview({
       const top = Math.max(0, page.offsetTop + selectedLocation.rect!.top * page.clientHeight - 72);
       container.scrollTo({ top, behavior: 'auto' });
       container.scrollTop = top;
-      renderPageTaskAnchorOverlays(hostRef.current, pageTaskAnchors, pageTaskAnchorLocations, selectedPageTaskAnchorId);
+      renderPageTaskAnchorOverlays(hostRef.current, pageTaskAnchors, pageTaskAnchorLocations, selectedPageTaskAnchorId, pageTaskFillValues);
     };
 
     const timers = [80, 500, 1200].map((delay) => window.setTimeout(() => {
       scrollToLocation();
     }, delay));
     return () => timers.forEach((timer) => window.clearTimeout(timer));
-  }, [onPageChange, pageTaskAnchorLocations, pageTaskAnchors, selectedPageTaskAnchorId]);
+  }, [onPageChange, pageTaskAnchorLocations, pageTaskAnchors, pageTaskFillValues, selectedPageTaskAnchorId]);
 
   if (errorMessage) {
     return <div className="procurement-empty-mini">{errorMessage}</div>;
@@ -851,6 +878,7 @@ export function OpenSourcePdfHighlighterPreview({
             locations={locations}
             pageTaskAnchors={pageTaskAnchors}
             pageTaskAnchorLocations={pageTaskAnchorLocations}
+            pageTaskFillValues={pageTaskFillValues}
             detectedHighlightCount={detectedHighlightCount}
             selectedFieldId={selectedFieldId}
             selectedPageTaskAnchorId={selectedPageTaskAnchorId}

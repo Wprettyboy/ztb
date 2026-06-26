@@ -13301,6 +13301,48 @@ button {
   box-shadow: 0 0 0 4px rgba(191, 219, 254, 0.78);
 }
 
+.procurement-page-task-fill-overlay {
+  position: absolute;
+  z-index: 2;
+  display: inline-flex;
+  max-width: 42%;
+  min-height: 22px;
+  align-items: center;
+  padding: 3px 8px;
+  overflow: hidden;
+  color: #064e3b;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: rgba(236, 253, 245, 0.96);
+  border: 1px solid rgba(16, 185, 129, 0.72);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.14);
+  pointer-events: none;
+}
+
+.procurement-page-task-fill-overlay.is-review {
+  color: #713f12;
+  background: rgba(255, 251, 235, 0.97);
+  border-color: rgba(245, 158, 11, 0.72);
+}
+
+.procurement-page-task-fill-overlay.is-missing,
+.procurement-page-task-fill-overlay.is-error {
+  color: #7f1d1d;
+  background: rgba(254, 242, 242, 0.97);
+  border-color: rgba(239, 68, 68, 0.64);
+}
+
+.procurement-page-task-fill-overlay.is-active {
+  color: #1d4ed8;
+  background: rgba(239, 246, 255, 0.98);
+  border-color: rgba(37, 99, 235, 0.82);
+  box-shadow: 0 0 0 3px rgba(191, 219, 254, 0.68), 0 8px 20px rgba(15, 23, 42, 0.14);
+}
+
 .procurement-template-field-card {
   display: grid;
   width: 100%;

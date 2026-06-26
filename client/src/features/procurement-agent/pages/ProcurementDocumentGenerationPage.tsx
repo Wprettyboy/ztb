@@ -6,6 +6,7 @@ import type { SectionId } from '../../../shared/types/navigation';
 import {
   OpenSourcePdfHighlighterPreview,
   type TemplatePdfFieldLocation,
+  type TemplatePdfPageTaskFillTarget,
   type TemplatePdfPageTaskAnchorTarget,
 } from '../components/OpenSourcePdfHighlighterPreview';
 import type {
@@ -184,6 +185,15 @@ function findPageTaskByAnchorId(pageTaskPack: ProcurementTemplatePageTaskPack | 
   return null;
 }
 
+function buildFillValueMap(rows: GenerationTaskRow[]): Record<string, TemplatePdfPageTaskFillTarget> {
+  return Object.fromEntries(rows.map((row) => [rowKeyWithoutIndex(row.id), {
+    taskKey: rowKeyWithoutIndex(row.id),
+    value: row.value,
+    status: row.status,
+    confidence: row.confidence,
+  }]));
+}
+
 function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGenerationPageProps) {
   const [state, setState] = useState<ProcurementAgentState | null>(null);
   const [pageTaskPack, setPageTaskPack] = useState<ProcurementTemplatePageTaskPack | null>(null);
@@ -295,11 +305,15 @@ function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGe
       setSelectedAnchorId('');
       return;
     }
-    const selectedStillExists = pageTaskAnchors.some((anchor) => anchor.id === selectedAnchorId);
-    if (!selectedStillExists) {
-      setSelectedAnchorId(pageTaskAnchors[0].id);
-    }
+  const selectedStillExists = pageTaskAnchors.some((anchor) => anchor.id === selectedAnchorId);
+  if (!selectedStillExists) {
+    setSelectedAnchorId(pageTaskAnchors[0].id);
+  }
   }, [pageTaskAnchors, selectedAnchorId]);
+
+  useEffect(() => {
+    setAnchorLocations({});
+  }, [currentPdfPage]);
 
   const loadState = async () => {
     if (!window.yibiao?.procurementAgent) return;
@@ -833,6 +847,8 @@ function GenerationPreview({
   onNavigate: (section: SectionId) => void;
 }) {
   const currentRows = visibleRows.filter((row) => row.page === currentPdfPage);
+  const currentPageTaskAnchors = pageTaskAnchors.filter((anchor) => anchor.page === currentPdfPage);
+  const fillValueMap = useMemo(() => buildFillValueMap(visibleRows), [visibleRows]);
   const selectedRow = selectedTaskContext
     ? visibleRows.find((row) => row.page === selectedTaskContext.page.page && row.label === selectedTaskContext.task.label)
     : undefined;
@@ -871,9 +887,10 @@ function GenerationPreview({
               onSelectedFieldChange={() => undefined}
               onFieldLocationsChange={() => undefined}
               onPageChange={onCurrentPdfPageChange}
-              pageTaskAnchors={pageTaskAnchors}
+              pageTaskAnchors={currentPageTaskAnchors}
               selectedPageTaskAnchorId={selectedAnchorId}
               onPageTaskAnchorLocationsChange={onAnchorLocationsChange}
+              pageTaskFillValues={fillValueMap}
             />
           ) : (
             <div className="procurement-empty-mini">当前模板缺少 PDF 预览，请返回模板库重新扫描。</div>
@@ -884,7 +901,7 @@ function GenerationPreview({
           <div className="procurement-generation-review-head">
             <div>
               <strong>填充结果核对</strong>
-              <span>第 {currentPdfPage} 页 · {locatedAnchorCount}/{pageTaskAnchors.length} 锚点定位</span>
+              <span>第 {currentPdfPage} 页 · {locatedAnchorCount}/{currentPageTaskAnchors.length} 当前页锚点定位</span>
             </div>
             <button type="button" className="procurement-secondary-button" onClick={() => onNavigate('procurement-template-detail')}>
               原模板定位
