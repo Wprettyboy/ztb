@@ -13726,6 +13726,16 @@ button {
   background: #fff7e8;
 }
 
+.procurement-generation-row-status.is-missing {
+  color: #8a5800;
+  background: #fff7e8;
+}
+
+.procurement-generation-row-status.is-error {
+  color: #a33a26;
+  background: #fff0ed;
+}
+
 .procurement-generation-status.is-done,
 .procurement-generation-row-status.is-filled {
   color: #08664a;
@@ -13894,6 +13904,26 @@ button {
   margin-top: 3px;
   color: var(--yb-text-muted);
   font-size: 12px;
+}
+
+.procurement-generation-result-cell {
+  display: grid;
+  max-width: 560px;
+  gap: 4px;
+}
+
+.procurement-generation-result-cell strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.procurement-generation-result-cell small {
+  overflow: hidden;
+  color: var(--yb-text-muted);
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .procurement-generation-tag {

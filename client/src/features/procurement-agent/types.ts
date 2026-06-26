@@ -186,6 +186,42 @@ export interface ProcurementTemplatePageTaskPack {
   pages: ProcurementTemplatePageTask[];
 }
 
+export type ProcurementPageTaskFillStatus = 'waiting' | 'running' | 'filled' | 'review' | 'missing' | 'error';
+
+export interface ProcurementPageTaskFillResult {
+  key: string;
+  label: string;
+  page: number;
+  pageTitle: string;
+  group: string;
+  chapter: string;
+  type: string;
+  required: boolean;
+  risk: boolean;
+  status: ProcurementPageTaskFillStatus;
+  value: string;
+  evidence: string;
+  sourceBlockIds: string[];
+  confidence: number;
+  reason: string;
+  updatedAt: string;
+}
+
+export interface ProcurementPageTaskFillPack {
+  templateId: string;
+  templateName: string;
+  demandDocumentId: string;
+  demandFileName: string;
+  taskCount: number;
+  completedCount: number;
+  reviewCount: number;
+  missingCount: number;
+  errorCount: number;
+  generatedAt: string;
+  status: string;
+  results: ProcurementPageTaskFillResult[];
+}
+
 export interface ProcurementTemplateScanSummary {
   status: 'idle' | 'loaded' | 'error';
   message: string;

@@ -38,7 +38,9 @@ const bridge = {
     acceptHighConfidence: (threshold) => ipcRenderer.invoke('procurement-agent:accept-high-confidence', threshold),
     readTemplatePdf: (payload) => ipcRenderer.invoke('procurement-agent:read-template-pdf', payload),
     readTemplatePageTasks: (payload) => ipcRenderer.invoke('procurement-agent:read-template-page-tasks', payload),
+    readPageTaskFillPack: (payload) => ipcRenderer.invoke('procurement-agent:read-page-task-fill-pack', payload),
     analyzeTemplateWithAi: (payload) => ipcRenderer.invoke('procurement-agent:analyze-template-with-ai', payload),
+    fillPageTasksWithAi: (payload) => ipcRenderer.invoke('procurement-agent:fill-page-tasks-with-ai', payload),
     onEvent: (callback) => {
       ipcRenderer.send('procurement-agent:subscribe');
       const listener = (_event, payload) => callback(payload);

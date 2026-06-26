@@ -11,6 +11,9 @@ import {
 import type {
   ProcurementAgentState,
   ProcurementTemplateItem,
+  ProcurementPageTaskFillPack,
+  ProcurementPageTaskFillResult,
+  ProcurementPageTaskFillStatus,
   ProcurementTemplatePageTask,
   ProcurementTemplatePageTaskItem,
   ProcurementTemplatePageTaskPack,
@@ -31,9 +34,41 @@ interface GenerationTaskRow {
   type: string;
   required: boolean;
   risk: boolean;
-  status: 'waiting' | 'running' | 'filled' | 'review';
+  status: ProcurementPageTaskFillStatus;
   value: string;
   evidence: string;
+  confidence: number;
+  reason: string;
+  sourceBlockIds: string[];
+}
+
+interface PageTaskFillEvent {
+  type: 'page-task-fill';
+  status: string;
+  templateId?: string;
+  templateName?: string;
+  batchIndex?: number;
+  totalBatches?: number;
+  completedBatches?: number;
+  failedBatches?: number;
+  totalTasks?: number;
+  completedTasks?: number;
+  currentTaskLabel?: string;
+  message?: string;
+  results?: ProcurementPageTaskFillResult[];
+  fillPack?: ProcurementPageTaskFillPack;
+  updatedAt?: string;
+}
+
+interface FillRuntimeState {
+  status: string;
+  message: string;
+  batchIndex: number;
+  totalBatches: number;
+  completedBatches: number;
+  failedBatches: number;
+  currentTaskLabel: string;
+  updatedAt: string;
 }
 
 const stageSteps = [
@@ -42,6 +77,14 @@ const stageSteps = [
   { id: 'fill', label: '任务包填充', description: '逐项生成字段答案与证据' },
   { id: 'preview', label: '预览生成文件', description: '核对高亮、证据并导出' },
 ];
+
+const textProviderLabels: Record<string, string> = {
+  jinlong: '金龙',
+  volcengine: '火山方舟',
+  deepseek: 'DeepSeek',
+  longcat: 'LongCat',
+  custom: '自定义',
+};
 
 function safeArray<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];
@@ -85,18 +128,38 @@ function createTaskRows(pageTaskPack: ProcurementTemplatePageTaskPack | null): G
     required: Boolean(task.required),
     risk: Boolean(task.risk),
     status: 'waiting' as const,
-    value: createMockFilledValue(task),
+    value: '',
     evidence: safeArray(task.anchors)[0]?.sourceText || task.prompt || '',
+    confidence: 0,
+    reason: '',
+    sourceBlockIds: [],
   })));
 }
 
-function createMockFilledValue(task: ProcurementTemplatePageTaskItem) {
-  const label = task.label || '待填内容';
-  if (task.type === 'choice') return safeArray(task.options)[0] || `按采购需求选择“${label}”`;
-  if (task.type === 'multiChoice') return safeArray(task.options).slice(0, 2).join('、') || `按采购需求勾选“${label}”`;
-  if (task.type === 'calculated') return `根据采购需求计算${label}`;
-  if (task.type === 'compound') return `选择项及${label}补充内容待核对`;
-  return `${label}待由采购需求提取`;
+function mergeFillResultsIntoRows(rows: GenerationTaskRow[], fillPack: ProcurementPageTaskFillPack | null, runningKey = ''): GenerationTaskRow[] {
+  const resultByKey = new Map(safeArray(fillPack?.results).map((result) => [result.key, result]));
+  return rows.map((row) => {
+    const result = resultByKey.get(row.id) || resultByKey.get(row.id.replace(/_\d{2}$/, '')) || resultByKey.get(rowKeyWithoutIndex(row.id));
+    if (result) {
+      return {
+        ...row,
+        status: result.status,
+        value: result.value,
+        evidence: result.evidence || row.evidence,
+        confidence: result.confidence,
+        reason: result.reason,
+        sourceBlockIds: result.sourceBlockIds,
+      };
+    }
+    if (runningKey && (row.id === runningKey || rowKeyWithoutIndex(row.id) === runningKey)) {
+      return { ...row, status: 'running' };
+    }
+    return row;
+  });
+}
+
+function rowKeyWithoutIndex(value: string) {
+  return String(value || '').replace(/_\d{2}$/, '');
 }
 
 function buildPageTaskAnchors(pageTaskPack: ProcurementTemplatePageTaskPack | null): TemplatePdfPageTaskAnchorTarget[] {
@@ -124,12 +187,23 @@ function findPageTaskByAnchorId(pageTaskPack: ProcurementTemplatePageTaskPack | 
 function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGenerationPageProps) {
   const [state, setState] = useState<ProcurementAgentState | null>(null);
   const [pageTaskPack, setPageTaskPack] = useState<ProcurementTemplatePageTaskPack | null>(null);
+  const [fillPack, setFillPack] = useState<ProcurementPageTaskFillPack | null>(null);
+  const [fillRuntime, setFillRuntime] = useState<FillRuntimeState>({
+    status: 'idle',
+    message: '工作台已就绪，点击开始填充后会调用当前文本模型。',
+    batchIndex: 0,
+    totalBatches: 0,
+    completedBatches: 0,
+    failedBatches: 0,
+    currentTaskLabel: '',
+    updatedAt: '',
+  });
   const [loading, setLoading] = useState(false);
   const [stage, setStage] = useState<GenerationStage>('setup');
-  const [completedCount, setCompletedCount] = useState(0);
   const [selectedAnchorId, setSelectedAnchorId] = useState('');
   const [anchorLocations, setAnchorLocations] = useState<Record<string, TemplatePdfFieldLocation>>({});
   const [currentPdfPage, setCurrentPdfPage] = useState(1);
+  const [modelRuntimeLabel, setModelRuntimeLabel] = useState('当前文本模型');
   const { showToast } = useToast();
 
   useEffect(() => {
@@ -150,18 +224,15 @@ function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGe
     [state?.documents],
   );
   const taskRows = useMemo(() => createTaskRows(pageTaskPack), [pageTaskPack]);
-  const visibleRows = useMemo<GenerationTaskRow[]>(() => taskRows.map((row, index) => {
-    let status: GenerationTaskRow['status'] = 'waiting';
-    if (index < completedCount) {
-      status = row.risk ? 'review' : 'filled';
-    } else if (index === completedCount && stage === 'processing') {
-      status = 'running';
-    }
-    return { ...row, status };
-  }), [completedCount, stage, taskRows]);
+  const visibleRows = useMemo<GenerationTaskRow[]>(
+    () => mergeFillResultsIntoRows(taskRows, fillPack, stage === 'processing' ? rowKeyWithoutIndex(taskRows[safeArray(fillPack?.results).length]?.id || '') : ''),
+    [fillPack, stage, taskRows],
+  );
   const pageTaskAnchors = useMemo(() => buildPageTaskAnchors(pageTaskPack), [pageTaskPack]);
   const selectedTaskContext = useMemo(() => findPageTaskByAnchorId(pageTaskPack, selectedAnchorId), [pageTaskPack, selectedAnchorId]);
-  const completedPercent = taskRows.length ? Math.round((Math.min(completedCount, taskRows.length) / taskRows.length) * 100) : 0;
+  const completedCount = fillPack?.completedCount || visibleRows.filter((row) => row.status === 'filled' || row.status === 'review').length;
+  const processedCount = visibleRows.filter((row) => row.status !== 'waiting').length;
+  const completedPercent = taskRows.length ? Math.round((Math.min(processedCount, taskRows.length) / taskRows.length) * 100) : 0;
   const reviewCount = visibleRows.filter((row) => row.status === 'review').length;
   const currentTask = visibleRows.find((row) => row.status === 'running') || visibleRows[Math.min(completedCount, Math.max(visibleRows.length - 1, 0))];
   const locatedAnchorCount = Object.values(anchorLocations).filter((location) => location.found).length;
@@ -169,17 +240,55 @@ function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGe
   const backendAvailable = Boolean(window.yibiao?.procurementAgent);
 
   useEffect(() => {
-    if (stage !== 'processing') return undefined;
-    if (!taskRows.length) return undefined;
-    if (completedCount >= taskRows.length) {
-      setStage('done');
-      return undefined;
-    }
-    const timer = window.setTimeout(() => {
-      setCompletedCount((value) => Math.min(taskRows.length, value + 1));
-    }, 360);
-    return () => window.clearTimeout(timer);
-  }, [completedCount, stage, taskRows.length]);
+    if (!window.yibiao?.procurementAgent.onEvent) return undefined;
+    return window.yibiao.procurementAgent.onEvent((event) => {
+      const fillEvent = event as PageTaskFillEvent;
+      if (fillEvent?.type !== 'page-task-fill') return;
+      setFillRuntime({
+        status: fillEvent.status || 'running',
+        message: fillEvent.message || '正在填充任务包',
+        batchIndex: Number(fillEvent.batchIndex || 0),
+        totalBatches: Number(fillEvent.totalBatches || 0),
+        completedBatches: Number(fillEvent.completedBatches || 0),
+        failedBatches: Number(fillEvent.failedBatches || 0),
+        currentTaskLabel: fillEvent.currentTaskLabel || '',
+        updatedAt: fillEvent.updatedAt || new Date().toISOString(),
+      });
+      if (fillEvent.fillPack) {
+        setFillPack(fillEvent.fillPack);
+      } else if (safeArray(fillEvent.results).length) {
+        setFillPack((prev) => {
+          const previousResults = safeArray(prev?.results);
+          const byKey = new Map(previousResults.map((result) => [result.key, result]));
+          safeArray(fillEvent.results).forEach((result) => byKey.set(result.key, result));
+          const results = [...byKey.values()];
+          const completedCount = results.filter((result) => result.status === 'filled' || result.status === 'review').length;
+          const reviewCount = results.filter((result) => result.status === 'review').length;
+          const missingCount = results.filter((result) => result.status === 'missing').length;
+          const errorCount = results.filter((result) => result.status === 'error').length;
+          return {
+            templateId: fillEvent.templateId || prev?.templateId || activeTemplate?.id || '',
+            templateName: fillEvent.templateName || prev?.templateName || activeTemplate?.name || '',
+            demandDocumentId: prev?.demandDocumentId || demandDocument?.id || '',
+            demandFileName: prev?.demandFileName || demandDocument?.fileName || '',
+            taskCount: Number(fillEvent.totalTasks || prev?.taskCount || taskRows.length || results.length),
+            completedCount,
+            reviewCount,
+            missingCount,
+            errorCount,
+            generatedAt: prev?.generatedAt || new Date().toISOString(),
+            status: fillEvent.status || prev?.status || 'running',
+            results,
+          };
+        });
+      }
+      if (fillEvent.status === 'success' || fillEvent.status === 'partial') {
+        setStage('done');
+      } else if (fillEvent.status === 'running' || fillEvent.status === 'batch-running') {
+        setStage('processing');
+      }
+    });
+  }, [activeTemplate?.id, activeTemplate?.name, demandDocument?.fileName, demandDocument?.id, taskRows.length]);
 
   useEffect(() => {
     if (!pageTaskAnchors.length) {
@@ -196,12 +305,34 @@ function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGe
     if (!window.yibiao?.procurementAgent) return;
     try {
       setLoading(true);
+      if (window.yibiao?.config?.load) {
+        const config = await window.yibiao.config.load();
+        const providerLabel = textProviderLabels[config.text_model_provider] || config.text_model_provider || '文本模型';
+        setModelRuntimeLabel(`${providerLabel} · ${config.model_name || '未配置模型'}`);
+      }
       const loaded = await window.yibiao.procurementAgent.loadState();
       setState(loaded);
       const templateId = loaded.activeTemplateId || loaded.templateLibrary[0]?.id || '';
       if (templateId && window.yibiao.procurementAgent.readTemplatePageTasks) {
         const tasks = await window.yibiao.procurementAgent.readTemplatePageTasks({ templateId });
         setPageTaskPack(tasks);
+      }
+      if (templateId && window.yibiao.procurementAgent.readPageTaskFillPack) {
+        const storedFillPack = await window.yibiao.procurementAgent.readPageTaskFillPack({ templateId });
+        setFillPack(storedFillPack);
+        if (storedFillPack) {
+          setStage('done');
+          setFillRuntime({
+            status: storedFillPack.status || 'done',
+            message: `已加载上次填充结果：${storedFillPack.completedCount}/${storedFillPack.taskCount} 项`,
+            batchIndex: 0,
+            totalBatches: 0,
+            completedBatches: 0,
+            failedBatches: storedFillPack.errorCount || 0,
+            currentTaskLabel: '',
+            updatedAt: storedFillPack.generatedAt,
+          });
+        }
       }
     } catch (error) {
       showToast(error instanceof Error ? error.message : '加载智能生成页面失败', 'error');
@@ -216,13 +347,40 @@ function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGe
       setLoading(true);
       const nextState = await window.yibiao.procurementAgent.selectTemplate({ templateId: template.id });
       setState(nextState);
-      setCompletedCount(0);
+      setFillPack(null);
+      setFillRuntime({
+        status: 'idle',
+        message: '已切换模板，点击开始填充后会调用当前文本模型。',
+        batchIndex: 0,
+        totalBatches: 0,
+        completedBatches: 0,
+        failedBatches: 0,
+        currentTaskLabel: '',
+        updatedAt: '',
+      });
       setStage('setup');
       setAnchorLocations({});
       const tasks = window.yibiao.procurementAgent.readTemplatePageTasks
         ? await window.yibiao.procurementAgent.readTemplatePageTasks({ templateId: template.id })
         : null;
       setPageTaskPack(tasks);
+      const storedFillPack = window.yibiao.procurementAgent.readPageTaskFillPack
+        ? await window.yibiao.procurementAgent.readPageTaskFillPack({ templateId: template.id })
+        : null;
+      setFillPack(storedFillPack);
+      if (storedFillPack) {
+        setStage('done');
+        setFillRuntime({
+          status: storedFillPack.status || 'done',
+          message: `已加载该模板上次填充结果：${storedFillPack.completedCount}/${storedFillPack.taskCount} 项`,
+          batchIndex: 0,
+          totalBatches: 0,
+          completedBatches: 0,
+          failedBatches: storedFillPack.errorCount || 0,
+          currentTaskLabel: '',
+          updatedAt: storedFillPack.generatedAt,
+        });
+      }
       showToast(`已选择模板：${template.name}`, 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : '选择模板失败', 'error');
@@ -248,21 +406,57 @@ function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGe
     }
   };
 
-  const startGeneration = () => {
+  const startGeneration = async () => {
     if (!activeTemplate) {
       showToast('请先选择采购模板。', 'info');
+      return;
+    }
+    if (!demandDocument) {
+      showToast('请先上传采购需求方案。', 'info');
       return;
     }
     if (!taskRows.length) {
       showToast('当前模板没有页面任务包，请先在模板库执行 AI 解析。', 'info');
       return;
     }
-    setStage('processing');
-    setCompletedCount(0);
-  };
-
-  const togglePause = () => {
-    setStage((value) => value === 'processing' ? 'paused' : 'processing');
+    if (!window.yibiao?.procurementAgent.fillPageTasksWithAi) {
+      showToast('当前客户端还未启用任务包 AI 填充接口，请重启客户端后再试。', 'error');
+      return;
+    }
+    try {
+      setLoading(true);
+      setStage('processing');
+      setFillPack(null);
+      setFillRuntime({
+        status: 'running',
+        message: '正在提交任务包填充请求...',
+        batchIndex: 0,
+        totalBatches: 0,
+        completedBatches: 0,
+        failedBatches: 0,
+        currentTaskLabel: '',
+        updatedAt: new Date().toISOString(),
+      });
+      const result = await window.yibiao.procurementAgent.fillPageTasksWithAi({ templateId: activeTemplate.id, batchSize: 6 });
+      if (result.fillPack) {
+        setFillPack(result.fillPack);
+      }
+      if (result.state) {
+        setState(result.state);
+      }
+      setStage(result.success ? 'done' : 'done');
+      showToast(result.message || '任务包填充完成', result.success ? 'success' : 'info');
+    } catch (error) {
+      setStage('setup');
+      setFillRuntime((prev) => ({
+        ...prev,
+        status: 'error',
+        message: error instanceof Error ? error.message : '任务包填充失败',
+      }));
+      showToast(error instanceof Error ? error.message : '任务包填充失败', 'error');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const openPreview = () => {
@@ -312,7 +506,7 @@ function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGe
         </div>
         <div className="procurement-agent-actions">
           <span className={`procurement-model-pill${backendAvailable ? '' : ' is-preview'}`}>
-            {backendAvailable ? '本地工作台' : '预览模式'}
+            {backendAvailable ? modelRuntimeLabel : '预览模式'}
           </span>
           <button type="button" className="procurement-secondary-button" disabled={loading} onClick={() => void loadState()}>
             刷新
@@ -378,7 +572,7 @@ function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGe
                 <i style={{ width: `${completedPercent}%` }} />
               </div>
               <div className="procurement-generation-progress-metrics">
-                <span><strong>{Math.min(completedCount, taskRows.length)}</strong>已完成</span>
+                <span><strong>{Math.min(processedCount, taskRows.length)}</strong>已处理</span>
                 <span><strong>{taskRows.length}</strong>总任务</span>
                 <span><strong>{reviewCount}</strong>需确认</span>
                 <span><strong>{currentTask?.label || '等待开始'}</strong>当前任务</span>
@@ -395,28 +589,29 @@ function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGe
                 <em className={`procurement-generation-status is-${stage}`}>{stageLabel(stage)}</em>
               </div>
               <div className="procurement-generation-current-task">
-                <strong>{currentTask?.label || '等待任务启动'}</strong>
-                <p>{currentTask ? `第 ${currentTask.page} 页 · ${currentTask.group} · ${taskTypeLabel(currentTask.type)}` : '上传采购需求后即可开始填充任务包。'}</p>
+                <strong>{fillRuntime.currentTaskLabel || currentTask?.label || '等待任务启动'}</strong>
+                <p>{fillRuntime.message || (currentTask ? `第 ${currentTask.page} 页 · ${currentTask.group} · ${taskTypeLabel(currentTask.type)}` : '上传采购需求后即可开始填充任务包。')}</p>
+                <small>{modelRuntimeLabel}</small>
               </div>
               <div className="procurement-generation-token-grid">
-                <span><strong>{stage === 'processing' ? '18.6' : '-'}</strong>Token/s</span>
-                <span><strong>{stage === 'processing' ? '0.05s' : '-'}</strong>S/Token</span>
-                <span><strong>{stage === 'processing' ? '并发 4' : '待机'}</strong>执行状态</span>
+                <span><strong>{fillRuntime.totalBatches ? `${fillRuntime.completedBatches}/${fillRuntime.totalBatches}` : '-'}</strong>批次</span>
+                <span><strong>{fillRuntime.failedBatches || 0}</strong>异常批次</span>
+                <span><strong>{stage === 'processing' ? '调用中' : stage === 'done' ? '已完成' : '待机'}</strong>执行状态</span>
               </div>
               <div className="procurement-generation-log">
-                {buildGenerationLogs(stage, currentTask, completedCount, taskRows.length).map((log) => <p key={log}>{log}</p>)}
+                {buildGenerationLogs(stage, currentTask, processedCount, taskRows.length, fillRuntime, fillPack).map((log) => <p key={log}>{log}</p>)}
               </div>
               <div className="procurement-generation-actions">
-                {stage === 'processing' || stage === 'paused' ? (
-                  <button type="button" className="procurement-secondary-button" onClick={togglePause}>
-                    {stage === 'processing' ? '暂停' : '继续'}
+                {stage === 'processing' ? (
+                  <button type="button" className="procurement-secondary-button" disabled>
+                    后台执行中
                   </button>
                 ) : (
-                  <button type="button" className="procurement-primary-button" disabled={loading || !taskRows.length} onClick={startGeneration}>
+                  <button type="button" className="procurement-primary-button" disabled={loading || !taskRows.length} onClick={() => void startGeneration()}>
                     开始填充
                   </button>
                 )}
-                <button type="button" className="procurement-primary-button" disabled={!taskRows.length || completedCount < taskRows.length} onClick={openPreview}>
+                <button type="button" className="procurement-primary-button" disabled={!taskRows.length || !fillPack} onClick={openPreview}>
                   查看预览
                 </button>
               </div>
@@ -481,7 +676,12 @@ function ProcurementDocumentGenerationPage({ onNavigate }: ProcurementDocumentGe
                       <td>{taskTypeLabel(row.type)}</td>
                       <td><span className={`procurement-generation-tag is-${groupTone(row.group)}`}>{row.group}</span></td>
                       <td><span className={`procurement-generation-row-status is-${row.status}`}>{rowStatusLabel(row.status)}</span></td>
-                      <td>{row.status === 'waiting' ? '等待处理' : row.value}</td>
+                      <td>
+                        <div className="procurement-generation-result-cell">
+                          <strong>{row.status === 'waiting' || row.status === 'running' ? rowStatusLabel(row.status) : row.value || '未提取到明确依据'}</strong>
+                          {(row.evidence || row.reason) && row.status !== 'waiting' ? <small>{row.evidence || row.reason}</small> : null}
+                        </div>
+                      </td>
                     </tr>
                   )) : (
                     <tr>
@@ -554,16 +754,28 @@ function GenerationGroupProgress({ rows }: { rows: GenerationTaskRow[] }) {
   );
 }
 
-function buildGenerationLogs(stage: GenerationStage, currentTask: GenerationTaskRow | undefined, completed: number, total: number) {
+function buildGenerationLogs(
+  stage: GenerationStage,
+  currentTask: GenerationTaskRow | undefined,
+  completed: number,
+  total: number,
+  fillRuntime: FillRuntimeState,
+  fillPack: ProcurementPageTaskFillPack | null,
+) {
   if (!total) return ['等待加载页面任务包。'];
-  if (stage === 'done') return [`任务包填充完成，共处理 ${total} 项。`, '已生成预览核对数据，可进入预览页面。'];
+  if (stage === 'done') {
+    return [
+      fillRuntime.message || `任务包填充完成，共处理 ${total} 项。`,
+      fillPack ? `已填充 ${fillPack.completedCount} 项，待确认 ${fillPack.reviewCount} 项，缺失 ${fillPack.missingCount} 项，异常 ${fillPack.errorCount} 项。` : '已生成预览核对数据，可进入预览页面。',
+    ];
+  }
   if (stage === 'paused') return [`已暂停在第 ${Math.min(completed + 1, total)} 项：${currentTask?.label || '任务'}`];
   if (stage === 'processing') return [
-    `正在处理第 ${Math.min(completed + 1, total)}/${total} 项：${currentTask?.label || '任务'}`,
-    '正在匹配需求方案证据并生成字段值。',
-    '高风险字段将标记为人工确认。',
+    fillRuntime.message || `正在处理第 ${Math.min(completed + 1, total)}/${total} 项：${currentTask?.label || '任务'}`,
+    fillRuntime.totalBatches ? `批次进度 ${fillRuntime.completedBatches}/${fillRuntime.totalBatches}，异常批次 ${fillRuntime.failedBatches}。` : '正在等待模型返回 JSON。',
+    '高风险字段会标记为待确认；找不到依据会标记为缺失。',
   ];
-  return ['工作台已就绪，点击开始填充后会逐项执行任务包。'];
+  return [fillRuntime.message || '工作台已就绪，点击开始填充后会调用当前文本模型执行任务包。'];
 }
 
 function stageLabel(stage: GenerationStage) {
@@ -578,6 +790,8 @@ function rowStatusLabel(status: GenerationTaskRow['status']) {
   if (status === 'running') return '处理中';
   if (status === 'filled') return '已填充';
   if (status === 'review') return '待确认';
+  if (status === 'missing') return '缺失';
+  if (status === 'error') return '异常';
   return '等待';
 }
 
@@ -733,8 +947,12 @@ function PreviewTaskCard({
         <strong>{task.label}{task.required ? ' *' : ''}</strong>
         <span>{taskTypeLabel(task.type)}</span>
       </div>
-      <p>{row?.value || createMockFilledValue(task)}</p>
-      <small>第 {page} 页 · {task.group || task.chapter || '未分组'} · {locatedCount}/{anchors.length} 锚点</small>
+      <p>{row?.value || (row?.status === 'missing' ? '未提取到明确依据' : '未填充')}</p>
+      <small>
+        第 {page} 页 · {task.group || task.chapter || '未分组'} · {locatedCount}/{anchors.length} 锚点
+        {row?.confidence ? ` · 置信度 ${row.confidence}` : ''}
+      </small>
+      {(row?.evidence || row?.reason) ? <small>{row.evidence || row.reason}</small> : null}
       <div className="procurement-generation-review-card-actions">
         <button type="button" className="procurement-secondary-button">确认</button>
         <button type="button" className="procurement-secondary-button">编辑</button>

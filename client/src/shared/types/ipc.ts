@@ -1,7 +1,7 @@
 import type { ChatCompletionRequest, JsonCompletionRequest } from './ai';
 import type { ClientConfig, ConfigSaveResult, ImageModelTestResult, ModelListResult } from './config';
 import type { KnowledgeAnalysisSnapshot, KnowledgeBaseEvent, KnowledgeBaseIndex, KnowledgeBaseIndexMutationResult, KnowledgeBaseMigrationResult, KnowledgeBaseMigrationStatus, KnowledgeBaseMutationResult, KnowledgeBaseRetryDocumentResult, KnowledgeBaseStartMatchingResult, KnowledgeBaseUploadResult, KnowledgeDocument, KnowledgeFolder, KnowledgeItem } from '../../features/knowledge-base/types';
-import type { ProcurementActionResult, ProcurementAgentState } from '../../features/procurement-agent/types';
+import type { ProcurementActionResult, ProcurementAgentState, ProcurementPageTaskFillPack } from '../../features/procurement-agent/types';
 import type { BidAnalysisMode, BidAnalysisTaskState, ContentGenerationOptions, ContentGenerationPlanState, ContentGenerationRuntimeState, ContentGenerationSectionState, DetectedBidSection, GlobalFactGroupState, SaveOutlineRequest, TechnicalPlanState, TechnicalPlanStep, TechnicalPlanWorkflowKind } from '../../features/technical-plan/types';
 import type { OutlineData, OutlineMode } from './outline';
 
@@ -87,7 +87,9 @@ export interface YibiaoBridge {
     acceptHighConfidence: (threshold?: number) => Promise<ProcurementAgentState>;
     readTemplatePdf: (payload?: { templateId?: string }) => Promise<ArrayBuffer | Uint8Array | number[]>;
     readTemplatePageTasks?: (payload?: { templateId?: string }) => Promise<import('../../features/procurement-agent/types').ProcurementTemplatePageTaskPack>;
+    readPageTaskFillPack?: (payload?: { templateId?: string }) => Promise<ProcurementPageTaskFillPack | null>;
     analyzeTemplateWithAi?: (payload?: { templateId?: string; concurrency?: number }) => Promise<ProcurementActionResult>;
+    fillPageTasksWithAi?: (payload?: { templateId?: string; batchSize?: number }) => Promise<{ success: boolean; message?: string; state: ProcurementAgentState; fillPack?: ProcurementPageTaskFillPack }>;
     onEvent?: (callback: (event: unknown) => void) => () => void;
     selectTemplate: (payload: { templateId: string }) => Promise<ProcurementAgentState>;
     deleteTemplate: (payload: { templateId: string }) => Promise<ProcurementActionResult>;

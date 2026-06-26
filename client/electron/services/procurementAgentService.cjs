@@ -797,6 +797,10 @@ function getTemplatePageTaskDir(app, templateId) {
   return path.join(getTemplateTaskPackDir(app, templateId), 'page-tasks');
 }
 
+function getTemplateFillPackPath(app, templateId) {
+  return path.join(getTemplateTaskPackDir(app, templateId), 'page-task-fill-pack.json');
+}
+
 function safeFileStem(value) {
   return path.basename(String(value || 'template'), path.extname(String(value || 'template')))
     .replace(/[<>:"/\\|?*\x00-\x1F]+/g, ' ')
@@ -1824,6 +1828,181 @@ function normalizeExtractedAnswers(payload, markdown, sourceBlocks, questions = 
   });
 }
 
+const PAGE_TASK_FILL_RESULT_STATUSES = new Set(['filled', 'review', 'missing', 'error']);
+
+function createDemandEvidencePackForPageTasks(sourceBlocks = []) {
+  const blocks = (Array.isArray(sourceBlocks) ? sourceBlocks : []).slice(0, 120);
+  let output = blocks.map((block) => [
+    `[${block.id}] ${block.title || '需求片段'}（行 ${block.startLine || '-'}-${block.endLine || '-'}）`,
+    block.text || block.preview || '',
+  ].join('\n')).join('\n\n');
+  if (output.length > 56000) {
+    output = output.slice(0, 56000);
+  }
+  return output;
+}
+
+function createPageTaskFillMessages({ template, demandDocument, sourceBlocks, tasks, batchIndex, totalBatches }) {
+  const schemaExample = {
+    results: [
+      {
+        key: 'page_001_project_code',
+        value: '项目编号或空字符串',
+        status: 'filled',
+        confidence: 88,
+        evidence: '逐字摘录采购需求中的依据，找不到依据则为空',
+        sourceBlockIds: ['src_001'],
+        reason: '简短说明为什么这样填写，缺失时说明缺失原因',
+      },
+    ],
+  };
+
+  const taskPayload = tasks.map((task) => ({
+    key: task.key,
+    label: task.label,
+    type: task.type,
+    inputKind: task.inputKind,
+    required: Boolean(task.required),
+    risk: Boolean(task.risk),
+    group: task.group,
+    chapter: task.chapter,
+    page: task.page,
+    pageTitle: task.pageTitle,
+    prompt: task.prompt,
+    placeholder: task.placeholder,
+    options: Array.isArray(task.options) ? task.options : [],
+    anchors: Array.isArray(task.anchors) ? task.anchors.map((anchor) => ({
+      matchText: anchor.matchText,
+      sourceText: anchor.sourceText,
+      pageHint: anchor.pageHint,
+    })) : [],
+  }));
+
+  return [
+    {
+      role: 'system',
+      content: [
+        '你是采购文件任务包填充员。你的任务是根据“采购需求方案证据块”为模板任务生成填充值。',
+        '只返回严格 JSON 对象，不要 Markdown，不要解释，不要代码块。',
+        '必须逐项返回输入任务中的 key，不得遗漏，不得新增 key。',
+        '只能根据采购需求证据块填写，不要根据模板原文或常识编造。',
+        '如果采购需求中没有明确依据，value 为空字符串，status 为 missing，confidence 为 0，并说明 reason。',
+        '如果字段为选择题或复合题，value 必须优先使用任务 options 中的选项文字；复合题可以写成“选项：补充内容”。',
+        '如果字段涉及金额、资格、评分、付款、保证金、工期、人员、业绩等高风险内容，即使找到答案也优先 status=review。',
+        'status 只能是 filled、review、missing、error。',
+        'confidence 是 0-100 的整数。',
+        'evidence 必须摘录采购需求原文中的关键依据，不得写模板原文。',
+        'sourceBlockIds 必须来自输入证据块编号，例如 src_001；没有依据时为空数组。',
+      ].join('\n'),
+    },
+    {
+      role: 'user',
+      content: [
+        `模板ID：${template.id}`,
+        `模板名称：${template.name || template.fileName || ''}`,
+        `需求文件：${demandDocument?.fileName || ''}`,
+        `当前批次：${batchIndex}/${totalBatches}`,
+        '',
+        '待填任务 JSON：',
+        JSON.stringify(taskPayload, null, 2),
+        '',
+        '采购需求方案证据块：',
+        createDemandEvidencePackForPageTasks(sourceBlocks),
+        '',
+        '输出 JSON Schema 示例：',
+        JSON.stringify(schemaExample, null, 2),
+      ].join('\n'),
+    },
+  ];
+}
+
+function flattenPageTasksForFill(pageTaskPack) {
+  return (Array.isArray(pageTaskPack?.pages) ? pageTaskPack.pages : []).flatMap((page) => (
+    (Array.isArray(page.tasks) ? page.tasks : []).map((task) => ({
+      ...task,
+      page: Number(page.page || 0),
+      pageTitle: normalizeString(page.pageTitle) || `第 ${page.page || 0} 页`,
+    }))
+  ));
+}
+
+function normalizePageTaskFillResult(raw, task, sourceBlocks) {
+  const statusRaw = normalizeString(raw?.status);
+  const value = cleanExtractedValue(raw?.value);
+  const sourceBlockIds = normalizeSourceBlockIds(raw?.sourceBlockIds || raw?.source_block_ids || raw?.sourceBlockId || raw?.source_block_id, sourceBlocks);
+  let status = PAGE_TASK_FILL_RESULT_STATUSES.has(statusRaw) ? statusRaw : '';
+  if (!status) {
+    status = value ? (task.risk ? 'review' : 'filled') : 'missing';
+  }
+  if (value && task.risk && status === 'filled') {
+    status = 'review';
+  }
+  if (!value && status !== 'error') {
+    status = 'missing';
+  }
+  const evidence = normalizeString(raw?.evidence || raw?.sourceText || raw?.source_text);
+  return {
+    key: task.key,
+    label: task.label,
+    page: Number(task.page || 0),
+    pageTitle: normalizeString(task.pageTitle) || `第 ${task.page || 0} 页`,
+    group: normalizeString(task.group) || '未分组',
+    chapter: normalizeString(task.chapter) || '',
+    type: normalizeString(task.type) || 'blank',
+    required: Boolean(task.required),
+    risk: Boolean(task.risk),
+    status,
+    value,
+    evidence,
+    sourceBlockIds,
+    confidence: value ? clampConfidence(raw?.confidence || (sourceBlockIds.length ? 78 : 55)) : 0,
+    reason: normalizeString(raw?.reason || raw?.note || raw?.message),
+    updatedAt: nowIso(),
+  };
+}
+
+function normalizePageTaskFillPayload(payload, tasks, sourceBlocks) {
+  const resultItems = Array.isArray(payload?.results) ? payload.results : Array.isArray(payload?.tasks) ? payload.tasks : [];
+  const byKey = new Map();
+  resultItems.forEach((item) => {
+    const key = normalizeFieldKey(item?.key || item?.id || item?.taskKey || item?.task_key);
+    if (key) byKey.set(key, item);
+  });
+  return tasks.map((task) => normalizePageTaskFillResult(byKey.get(task.key) || {}, task, sourceBlocks));
+}
+
+async function savePageTaskFillPack(app, templateId, fillPack) {
+  const filePath = getTemplateFillPackPath(app, templateId);
+  await writeJsonFile(filePath, fillPack);
+  return fillPack;
+}
+
+async function readStoredPageTaskFillPack(app, templateId) {
+  const normalizedTemplateId = normalizeString(templateId);
+  if (!normalizedTemplateId) return null;
+  try {
+    const fillPack = await readJsonFile(getTemplateFillPackPath(app, normalizedTemplateId));
+    return fillPack && typeof fillPack === 'object' ? fillPack : null;
+  } catch {
+    return null;
+  }
+}
+
+function createPageTaskFillPackSummary(fillPack) {
+  const results = Array.isArray(fillPack?.results) ? fillPack.results : [];
+  const completedCount = results.filter((item) => item.status === 'filled' || item.status === 'review').length;
+  const reviewCount = results.filter((item) => item.status === 'review').length;
+  const missingCount = results.filter((item) => item.status === 'missing').length;
+  const errorCount = results.filter((item) => item.status === 'error').length;
+  return {
+    taskCount: results.length,
+    completedCount,
+    reviewCount,
+    missingCount,
+    errorCount,
+  };
+}
+
 function ensureStateShape(state) {
   const empty = createEmptyState();
   const templateTaskPack = {
@@ -2378,6 +2557,14 @@ function createProcurementAgentService({ app, configStore, aiService }) {
   function emitAiAnalysisProgress(patch) {
     emitEvent({
       type: 'template-ai-analysis',
+      updatedAt: nowIso(),
+      ...patch,
+    });
+  }
+
+  function emitPageTaskFillProgress(patch) {
+    emitEvent({
+      type: 'page-task-fill',
       updatedAt: nowIso(),
       ...patch,
     });
@@ -2982,6 +3169,200 @@ function createProcurementAgentService({ app, configStore, aiService }) {
     return readTemplatePageTaskPack(app, template);
   }
 
+  async function readPageTaskFillPack(payload = {}) {
+    const state = await loadState();
+    const templateId = normalizeString(payload?.templateId) || state.activeTemplateId;
+    const template = state.templateLibrary.find((item) => item.id === templateId)
+      || state.templateLibrary.find((item) => item.id === state.activeTemplateId);
+    if (!template) return null;
+    return readStoredPageTaskFillPack(app, template.id);
+  }
+
+  async function fillPageTasksWithAi(payload = {}) {
+    const state = await loadState();
+    const markdown = await readDemandMarkdown();
+    if (!markdown.trim()) {
+      return {
+        success: false,
+        message: '请先上传并解析采购需求方案',
+        state,
+      };
+    }
+
+    const templateId = normalizeString(payload?.templateId) || state.activeTemplateId;
+    const template = state.templateLibrary.find((item) => item.id === templateId)
+      || state.templateLibrary.find((item) => item.id === state.activeTemplateId);
+    if (!template) {
+      return { success: false, message: '请先选择采购模板', state };
+    }
+
+    const pageTaskPack = await readTemplatePageTaskPack(app, template);
+    const tasks = flattenPageTasksForFill(pageTaskPack);
+    if (!tasks.length) {
+      return { success: false, message: '当前模板没有页面任务包，请先执行模板 AI 解析', state };
+    }
+
+    const demandDocument = state.documents.find((item) => item.role === 'demand') || null;
+    const sourceBlocks = state.sourceBlocks.length ? state.sourceBlocks : createSourceBlocks(markdown);
+    const batchSize = Math.max(1, Math.min(Number(payload?.batchSize) || 6, 12));
+    const batches = [];
+    for (let index = 0; index < tasks.length; index += batchSize) {
+      batches.push(tasks.slice(index, index + batchSize));
+    }
+
+    const startedState = await persist(addLog({
+      ...state,
+      sourceBlocks,
+      extraction: {
+        ...state.extraction,
+        status: 'extracting',
+        message: `正在调用当前文本模型填充页面任务包，共 ${tasks.length} 项`,
+      },
+    }, `开始填充页面任务包：${tasks.length} 项`));
+
+    emitPageTaskFillProgress({
+      status: 'running',
+      templateId: template.id,
+      templateName: template.name,
+      totalBatches: batches.length,
+      completedBatches: 0,
+      totalTasks: tasks.length,
+      completedTasks: 0,
+      message: `开始填充任务包，共 ${tasks.length} 项，${batches.length} 批`,
+    });
+
+    const results = [];
+    let completedBatches = 0;
+    let failedBatches = 0;
+
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+      const batch = batches[batchIndex];
+      emitPageTaskFillProgress({
+        status: 'batch-running',
+        templateId: template.id,
+        templateName: template.name,
+        batchIndex: batchIndex + 1,
+        totalBatches: batches.length,
+        completedBatches,
+        failedBatches,
+        totalTasks: tasks.length,
+        completedTasks: results.length,
+        currentTaskLabel: batch[0]?.label || '',
+        message: `正在填充第 ${batchIndex + 1}/${batches.length} 批，${batch.length} 项`,
+      });
+
+      try {
+        const aiPayload = await aiService.requestJson({
+          messages: createPageTaskFillMessages({
+            template,
+            demandDocument,
+            sourceBlocks,
+            tasks: batch,
+            batchIndex: batchIndex + 1,
+            totalBatches: batches.length,
+          }),
+          temperature: 0.1,
+          max_tokens: 2200,
+          timeout_ms: 300000,
+          schemaName: 'procurement_page_task_fill',
+          progressLabel: `采购页面任务填充 第 ${batchIndex + 1} 批`,
+          failureMessage: '模型返回的页面任务填充 JSON 无效',
+          logTitle: '采购页面任务填充',
+        });
+        const normalizedBatch = normalizePageTaskFillPayload(aiPayload, batch, sourceBlocks);
+        results.push(...normalizedBatch);
+        completedBatches += 1;
+        emitPageTaskFillProgress({
+          status: 'batch-done',
+          templateId: template.id,
+          templateName: template.name,
+          batchIndex: batchIndex + 1,
+          totalBatches: batches.length,
+          completedBatches,
+          failedBatches,
+          totalTasks: tasks.length,
+          completedTasks: results.length,
+          results: normalizedBatch,
+          message: `第 ${batchIndex + 1}/${batches.length} 批完成`,
+        });
+      } catch (error) {
+        failedBatches += 1;
+        const message = error?.message || '任务包填充失败';
+        const failedResults = batch.map((task) => normalizePageTaskFillResult({
+          status: 'error',
+          reason: message,
+        }, task, sourceBlocks));
+        results.push(...failedResults);
+        emitPageTaskFillProgress({
+          status: 'batch-error',
+          templateId: template.id,
+          templateName: template.name,
+          batchIndex: batchIndex + 1,
+          totalBatches: batches.length,
+          completedBatches,
+          failedBatches,
+          totalTasks: tasks.length,
+          completedTasks: results.length,
+          results: failedResults,
+          message: `第 ${batchIndex + 1}/${batches.length} 批失败：${message}`,
+        });
+      }
+    }
+
+    const baseFillPack = {
+      templateId: template.id,
+      templateName: template.name || template.fileName || '',
+      demandDocumentId: demandDocument?.id || '',
+      demandFileName: demandDocument?.fileName || '',
+      generatedAt: nowIso(),
+      status: failedBatches ? 'partial' : 'done',
+      results,
+    };
+    const fillPack = {
+      ...baseFillPack,
+      ...createPageTaskFillPackSummary(baseFillPack),
+    };
+    await savePageTaskFillPack(app, template.id, fillPack);
+
+    const nextState = addLog({
+      ...startedState,
+      sourceBlocks,
+      extraction: {
+        ...startedState.extraction,
+        status: failedBatches ? 'error' : 'extracted',
+        message: failedBatches
+          ? `页面任务包部分填充完成：${fillPack.completedCount}/${fillPack.taskCount} 项，${failedBatches} 批失败`
+          : `页面任务包填充完成：${fillPack.completedCount}/${fillPack.taskCount} 项，${fillPack.reviewCount} 项需确认`,
+        extractedAt: nowIso(),
+        fieldCount: fillPack.completedCount,
+        missingCount: fillPack.missingCount,
+        riskCount: fillPack.reviewCount,
+        pendingCount: fillPack.reviewCount,
+      },
+    }, `页面任务包填充完成：${fillPack.completedCount}/${fillPack.taskCount} 项`);
+    const persistedState = await persist(nextState);
+
+    emitPageTaskFillProgress({
+      status: failedBatches ? 'partial' : 'success',
+      templateId: template.id,
+      templateName: template.name,
+      totalBatches: batches.length,
+      completedBatches,
+      failedBatches,
+      totalTasks: tasks.length,
+      completedTasks: results.length,
+      fillPack,
+      message: failedBatches ? '页面任务包部分填充完成' : '页面任务包填充完成',
+    });
+
+    return {
+      success: !failedBatches,
+      message: failedBatches ? '页面任务包部分填充完成，请查看异常任务' : '页面任务包填充完成',
+      state: persistedState,
+      fillPack,
+    };
+  }
+
   async function analyzeTemplateWithAi(payload = {}) {
     const state = await loadState();
     const templateId = normalizeString(payload?.templateId) || state.activeTemplateId;
@@ -3298,7 +3679,9 @@ function createProcurementAgentService({ app, configStore, aiService }) {
     acceptHighConfidence,
     readTemplatePdf,
     readTemplatePageTasks,
+    readPageTaskFillPack,
     analyzeTemplateWithAi,
+    fillPageTasksWithAi,
     selectTemplate,
     deleteTemplate,
     clear,
