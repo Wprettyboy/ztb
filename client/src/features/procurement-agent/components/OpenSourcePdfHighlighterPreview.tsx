@@ -493,21 +493,23 @@ function renderPageTaskAnchorOverlays(
       page.appendChild(layer);
     }
 
+    const fillValue = fillValues[anchor.taskKey];
+    const fillStatus = fillValue?.status || 'waiting';
+    const hasFilledValue = Boolean(fillValue?.value);
+
     const marker = document.createElement('span');
-    marker.className = `procurement-page-task-overlay${anchor.id === selectedAnchorId ? ' is-active' : ''}`;
-    marker.title = anchor.label;
+    marker.className = `procurement-page-task-overlay is-${fillStatus}${hasFilledValue ? ' has-value' : ' is-empty'}${anchor.id === selectedAnchorId ? ' is-active' : ''}`;
+    marker.title = hasFilledValue ? `${anchor.label}：${fillValue?.value}` : `${anchor.label}：待填充`;
     marker.style.left = `${location.rect.left * 100}%`;
     marker.style.top = `${location.rect.top * 100}%`;
     marker.style.width = `${location.rect.width * 100}%`;
     marker.style.height = `${Math.max(location.rect.height * 100, 1.2)}%`;
     layer.appendChild(marker);
 
-    const fillValue = fillValues[anchor.taskKey];
-    if (!fillValue?.value) return;
     const fillMarker = document.createElement('span');
-    fillMarker.className = `procurement-page-task-fill-overlay is-${fillValue.status || 'filled'}${anchor.id === selectedAnchorId ? ' is-active' : ''}`;
-    fillMarker.title = `${anchor.label}：${fillValue.value}`;
-    fillMarker.textContent = fillValue.value;
+    fillMarker.className = `procurement-page-task-fill-overlay is-${fillStatus}${hasFilledValue ? ' has-value' : ' is-empty'}${anchor.id === selectedAnchorId ? ' is-active' : ''}`;
+    fillMarker.title = hasFilledValue ? `${anchor.label}：${fillValue?.value}` : `${anchor.label}：待填充`;
+    fillMarker.textContent = hasFilledValue ? fillValue?.value || '' : '待填';
     const labelRight = (location.rect.left + location.rect.width) * 100;
     const inlineLeft = Math.min(82, labelRight + 1.8);
     const hasInlineRoom = inlineLeft < 82;
