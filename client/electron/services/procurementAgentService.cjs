@@ -801,6 +801,10 @@ function getTemplateFillPackPath(app, templateId) {
   return path.join(getTemplateTaskPackDir(app, templateId), 'page-task-fill-pack.json');
 }
 
+function getTemplateFillRunDir(app, templateId, runId) {
+  return path.join(getTemplateTaskPackDir(app, templateId), 'fill-runs', safeFileStem(runId).replace(/\s+/g, '-'));
+}
+
 function safeFileStem(value) {
   return path.basename(String(value || 'template'), path.extname(String(value || 'template')))
     .replace(/[<>:"/\\|?*\x00-\x1F]+/g, ' ')
@@ -1829,6 +1833,12 @@ function normalizeExtractedAnswers(payload, markdown, sourceBlocks, questions = 
 }
 
 const PAGE_TASK_FILL_RESULT_STATUSES = new Set(['filled', 'review', 'missing', 'error']);
+const PAGE_TASK_FILL_RESULT_SOURCES = new Set(['ai', 'global-fact', 'postprocess']);
+const PAGE_TASK_FILL_MISSING_KINDS = new Set(['not-in-demand', 'needs-human-policy', 'not-found']);
+const PAGE_TASK_FILL_PROMPT_VERSION = 'page-task-fill-v2';
+const PAGE_TASK_FILL_RISK_PATTERN = /金额|报价|限价|控制价|资格|资质|评分|付款|保证金|工期|人员|业绩|财务|低于成本|阈值|履约|联合体|评审|合同|税/;
+const PAGE_TASK_FILL_SCORING_PATTERN = /评分|分值|权重|扣分|基准价|评审因素|报价评分|实施方案评分|其他因素|人员配备评分|综合评分/;
+const PAGE_TASK_FILL_BLOCKED_PATTERN = /项目编号|采购编号|公告日期|封面日期|联系人|联系电话|联系邮箱|电子邮箱|异议受理|供应商名称|法定代表人|委托代理人|经营期限|开户|账号/;
 
 function createDemandEvidencePackForPageTasks(sourceBlocks = []) {
   const blocks = (Array.isArray(sourceBlocks) ? sourceBlocks : []).slice(0, 120);
@@ -1842,7 +1852,355 @@ function createDemandEvidencePackForPageTasks(sourceBlocks = []) {
   return output;
 }
 
-function createPageTaskFillMessages({ template, demandDocument, sourceBlocks, tasks, batchIndex, totalBatches }) {
+function createEvidenceBlockText(block, maxLength = 1800) {
+  const text = normalizeString(block?.text || block?.preview || '');
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
+function sanitizeDemandFactValue(value) {
+  return cleanExtractedValue(value)
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function compactEvidenceBlock(block, maxLength = 1800) {
+  return {
+    id: block.id,
+    title: block.title || block.heading || '需求片段',
+    startLine: block.startLine || null,
+    endLine: block.endLine || null,
+    text: createEvidenceBlockText(block, maxLength),
+  };
+}
+
+function findEvidenceLine(block, patterns = []) {
+  const lines = String(block?.text || block?.preview || '')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => normalizeString(line))
+    .filter(Boolean);
+  for (const pattern of patterns) {
+    const found = lines.find((line) => pattern.test(line));
+    if (found) return found;
+  }
+  const fallback = normalizeString(block?.text || block?.preview || '');
+  return fallback.length > 260 ? `${fallback.slice(0, 260)}...` : fallback;
+}
+
+function createGlobalFact(value, block, evidence, confidence = 90, extra = {}) {
+  const cleanValue = sanitizeDemandFactValue(value);
+  if (!cleanValue || !block?.id) return null;
+  return {
+    value: cleanValue,
+    evidence: normalizeString(evidence) || findEvidenceLine(block, [new RegExp(escapeRegExp(cleanValue))]),
+    sourceBlockIds: [block.id],
+    confidence: clampConfidence(confidence),
+    ...extra,
+  };
+}
+
+function mergeGlobalFacts(value, facts, confidence = 88, extra = {}) {
+  const usableFacts = facts.filter((fact) => fact?.value && Array.isArray(fact.sourceBlockIds));
+  if (!value || !usableFacts.length) return null;
+  const sourceBlockIds = [...new Set(usableFacts.flatMap((fact) => fact.sourceBlockIds || []))].slice(0, 6);
+  const evidence = usableFacts.map((fact) => fact.evidence).filter(Boolean).join('；');
+  return {
+    value: sanitizeDemandFactValue(value),
+    evidence,
+    sourceBlockIds,
+    confidence: clampConfidence(confidence),
+    ...extra,
+  };
+}
+
+function findFirstFact(sourceBlocks, patterns, transform = (match) => match?.[1] || match?.[0] || '') {
+  for (const block of Array.isArray(sourceBlocks) ? sourceBlocks : []) {
+    const text = String(block?.text || block?.preview || '');
+    for (const pattern of patterns) {
+      pattern.lastIndex = 0;
+      const match = pattern.exec(text);
+      const value = transform(match, block);
+      if (match && value) {
+        return createGlobalFact(value, block, findEvidenceLine(block, [pattern]));
+      }
+    }
+  }
+  return null;
+}
+
+function extractDemandGlobalFacts(sourceBlocks = [], markdown = '') {
+  const blocks = Array.isArray(sourceBlocks) ? sourceBlocks : [];
+  const fullText = String(markdown || blocks.map((block) => block.text || block.preview || '').join('\n'));
+  const facts = {};
+
+  facts.projectName = findFirstFact(blocks, [
+    /^(.+?项目)实施阶段总体采购方案/m,
+    /([\u4e00-\u9fa5A-Za-z0-9#（）()、\- 号]+?项目)位于/,
+  ], (match) => match?.[1]?.replace(/["“”]/g, ''));
+
+  facts.procurementObject = findFirstFact(blocks, [
+    /劳务分包[：:]\s*([^，；。\n]+)，共\s*(\d+)\s*项/,
+    /[（(]二[）)]\s*([^。\n]+劳务分包)/,
+  ], (match) => match?.[1]);
+
+  facts.location = findFirstFact(blocks, [
+    /项目位于([^，。；\n]+)[，。；]/,
+    /建设地点[：:]\s*([^。\n；]+)/,
+  ]);
+
+  facts.lotCount = findFirstFact(blocks, [
+    /属一个施工总承包标段/,
+    /劳务分包[：:][^，；。\n]+，共\s*(\d+)\s*项/,
+  ], (match) => (match?.[1] ? match[1] : '1'));
+
+  facts.constructionContent = findFirstFact(blocks, [
+    /本项目总建筑面积约[^。]+。建设内容包括[:：]?([^。]+。?)/,
+    /建设内容包括[:：]?([^。]+。?)/,
+  ], (match, block) => {
+    const line = findEvidenceLine(block, [/本项目总建筑面积约/, /建设内容包括/]);
+    return line || match?.[1];
+  });
+
+  facts.procurementScope = findFirstFact(blocks, [
+    /施工图设计范围内所涉及的([^。]+。?)/,
+    /界面划分\s*([^。]+。?)/,
+  ], (match) => match?.[0]?.replace(/^1\.?界面划分\s*/, ''));
+
+  const technicalBlocks = blocks.filter((block) => {
+    const text = `${block.title || ''}\n${block.text || block.preview || ''}`;
+    if (/四、项目招标方案|专业分包|年度供应商|劳务分包[：:]/.test(text)) return false;
+    return /2\.施工内容|3\.其他事项|4\.甲供材料及机具|甲供材料一类|甲供材料二类|甲供材料三类|甲供材料四类|甲供机具|除甲供材料、机具外/.test(text);
+  });
+  if (technicalBlocks.length) {
+    const selected = technicalBlocks.slice(0, 4);
+    facts.technicalRequirements = {
+      value: sanitizeDemandFactValue(selected.map((block) => createEvidenceBlockText(block, 420)).join('\n')),
+      evidence: selected.map((block) => findEvidenceLine(block, [/施工内容/, /其他事项/, /甲供材料/, /除甲供/])).filter(Boolean).join('；'),
+      sourceBlockIds: selected.map((block) => block.id).filter(Boolean),
+      confidence: 78,
+    };
+  }
+
+  facts.taxMode = findFirstFact(blocks, [
+    /采购控制价均为(不含税|含税)金额/,
+    /控制价均为(不含税|含税)金额/,
+  ]);
+
+  facts.maxPrice = findFirstFact(blocks, [
+    /采购控制价[：:]\s*([0-9]+(?:\.[0-9]+)?)\s*万元/,
+    /最高限价[：:]\s*([0-9]+(?:\.[0-9]+)?\s*万元)/,
+  ], (match) => (match?.[1] ? `${match[1].replace(/\s*万元$/, '')}万元` : ''));
+
+  if (facts.maxPrice && facts.taxMode) {
+    facts.maxPriceWithTax = mergeGlobalFacts(`${facts.maxPrice.value}：${facts.taxMode.value}`, [facts.maxPrice, facts.taxMode], 92);
+    facts.maxPriceCompound = mergeGlobalFacts(`${facts.taxMode.value}：${facts.maxPrice.value}`, [facts.maxPrice, facts.taxMode], 92);
+  }
+
+  facts.duration = findFirstFact(blocks, [
+    /工期[：:][^0-9\n]*(?:[^+。\n]*\+)?\s*(\d+)\s*个?日历天/,
+    /(\d+)\s*个?日历天计算合同工期/,
+  ], (match) => match?.[1]);
+
+  const qualificationBlocks = blocks.filter((block) => /资质要求|施工劳务资质|安全生产许可证/.test(`${block.title || ''}\n${block.text || block.preview || ''}`));
+  const qualificationText = qualificationBlocks.map((block) => block.text || block.preview || '').join('\n');
+  if (/施工劳务资质|安全生产许可证/.test(qualificationText)) {
+    const qualificationValue = [
+      /施工劳务资质/.test(qualificationText) ? '具有行政主管部门颁发的施工劳务资质' : '',
+      /安全生产许可证/.test(qualificationText) ? '具备有效的安全生产许可证' : '',
+    ].filter(Boolean).join('；');
+    facts.qualification = mergeGlobalFacts(qualificationValue, qualificationBlocks.map((block) => ({
+      value: qualificationValue,
+      evidence: findEvidenceLine(block, [/施工劳务资质/, /安全生产许可证/]),
+      sourceBlockIds: [block.id],
+      confidence: 88,
+    })), 90);
+    facts.qualificationCompound = facts.qualification
+      ? { ...facts.qualification, value: `有资质要求、要求安全生产许可证：${facts.qualification.value}` }
+      : null;
+  }
+
+  facts.performance = findFirstFact(blocks, [
+    /业绩要求[：:]\s*([^。\n]+。?)/,
+  ]);
+  if (facts.performance) {
+    facts.performanceCompound = {
+      ...facts.performance,
+      value: `有业绩要求、已完成：${facts.performance.value}`,
+    };
+  }
+
+  facts.personnel = findFirstFact(blocks, [
+    /人员要求[：:]\s*([^。\n]+(?:。|$))/,
+  ]);
+  if (facts.personnel) {
+    facts.personnelCompound = {
+      ...facts.personnel,
+      value: `有人员要求：${facts.personnel.value}`,
+    };
+  }
+
+  facts.reviewMethod = findFirstFact(blocks, [
+    /招采方式[：:][^（(]*(?:[（(])([^）)]+法)[）)]/,
+    /(综合评估法|经评审的最低投标价法|最低投标价法)/,
+  ]);
+
+  const lowCostBlock = blocks.find((block) => /低于成本评审条件/.test(block.text || block.preview || ''));
+  if (lowCostBlock) {
+    const lowCostText = lowCostBlock.text || lowCostBlock.preview || '';
+    const highestMatch = /最高限价相应价格的\s*(\d+(?:\.\d+)?)\s*%/.exec(lowCostText);
+    const averageMatch = /算术平均值的\s*(\d+(?:\.\d+)?)\s*%/.exec(lowCostText);
+    if (highestMatch || averageMatch) {
+      facts.lowCostThresholds = {
+        value: [highestMatch?.[1] ? `最高限价比例${highestMatch[1]}%` : '', averageMatch?.[1] ? `平均价比例${averageMatch[1]}%` : ''].filter(Boolean).join('；'),
+        highestPriceRatio: highestMatch?.[1] || '',
+        averagePriceRatio: averageMatch?.[1] || '',
+        evidence: findEvidenceLine(lowCostBlock, [/低于成本评审条件/]),
+        sourceBlockIds: [lowCostBlock.id],
+        confidence: 92,
+      };
+    }
+  }
+
+  facts.paymentTerms = findFirstFact(blocks, [
+    /11\.付款方式\s*([\s\S]+)/,
+    /付款方式\s*([\s\S]+)/,
+  ], (match, block) => {
+    const text = normalizeString(block.text || block.preview || '');
+    return text.replace(/^11\.付款方式\s*/, '').replace(/^付款方式\s*/, '');
+  });
+
+  facts.scoringDetails = /报价评分|评分权重|评分分值|综合评分明细|扣分值/.test(fullText)
+    ? findFirstFact(blocks, [/报价评分|评分权重|评分分值|综合评分明细|扣分值/])
+    : null;
+
+  Object.keys(facts).forEach((key) => {
+    if (!facts[key]?.value) delete facts[key];
+  });
+  return facts;
+}
+
+function summarizeGlobalFacts(globalFacts = {}) {
+  return Object.fromEntries(Object.entries(globalFacts)
+    .filter(([, fact]) => fact?.value)
+    .map(([key, fact]) => [key, {
+      value: fact.value,
+      sourceBlockIds: fact.sourceBlockIds || [],
+    }]));
+}
+
+function tokenizeTaskForEvidence(task) {
+  const text = [
+    task?.key,
+    task?.label,
+    task?.type,
+    task?.inputKind,
+    task?.group,
+    task?.chapter,
+    task?.prompt,
+    task?.placeholder,
+    ...(Array.isArray(task?.options) ? task.options : []),
+    ...(Array.isArray(task?.anchors) ? task.anchors.flatMap((anchor) => [anchor?.matchText, anchor?.sourceText]) : []),
+  ].map(normalizeString).filter(Boolean).join(' ');
+  const keywords = new Set();
+  const add = (values) => values.forEach((value) => {
+    const item = normalizeString(value);
+    if (item) keywords.add(item);
+  });
+
+  add(text.split(/[\s,，。；;：:、（）()【】\[\]""“”□]+/).filter((item) => item.length >= 2 && item.length <= 24));
+  const synonymRules = [
+    [/项目名称|采购项目名称|公告标题/, ['项目概况', '实施阶段总体采购方案', '项目位于']],
+    [/采购对象|采购标的|标段划分|标段数量|标段/, ['劳务分包', '共1项', '施工总承包标段']],
+    [/最高限价|控制价|金额|报价|税/, ['采购控制价', '不含税', '最高限价']],
+    [/低于成本|阈值|平均价/, ['低于成本评审条件', '最高限价相应价格', '算术平均值']],
+    [/评审方法|评审办法/, ['招采方式', '综合评估法', '经评审的最低投标价法']],
+    [/建设地点|地点/, ['位于', '建设地点']],
+    [/建设内容|规模|项目概况/, ['工程建设规模', '建设内容包括', '主要施工内容']],
+    [/采购范围|实施内容|技术|服务要求|界面/, ['界面划分', '施工图设计范围', '施工内容', '其他事项']],
+    [/工期|服务期/, ['工期', '日历天']],
+    [/资质|资格|安全生产许可证/, ['资质要求', '施工劳务资质', '安全生产许可证']],
+    [/业绩|类似项目/, ['业绩要求', '类似项目业绩', '合同金额']],
+    [/人员|技术负责人|安全生产管理人员/, ['人员要求', '技术负责人', '安全生产管理人员']],
+    [/付款|支付|结算|质保金|缺陷责任/, ['付款方式', '进度款', '结算款', '质保金']],
+    [/图纸|清单/, ['施工图', '工程量清单', '采购控制价清单']],
+  ];
+  synonymRules.forEach(([pattern, values]) => {
+    if (pattern.test(text)) add(values);
+  });
+  return [...keywords];
+}
+
+function scoreEvidenceBlockForTask(block, task, globalFacts = {}) {
+  const blockText = `${block?.title || ''}\n${block?.heading || ''}\n${block?.text || block?.preview || ''}`;
+  const normalizedBlock = normalizeLooseText(blockText);
+  const keywords = tokenizeTaskForEvidence(task);
+  let score = 0;
+  keywords.forEach((keyword) => {
+    const normalizedKeyword = normalizeLooseText(keyword);
+    if (!normalizedKeyword) return;
+    if (normalizedBlock.includes(normalizedKeyword)) score += Math.min(12, Math.max(2, normalizedKeyword.length));
+  });
+  Object.values(globalFacts).forEach((fact) => {
+    if (!fact?.value || !Array.isArray(fact.sourceBlockIds)) return;
+    if (fact.sourceBlockIds.includes(block.id)) score += 4;
+  });
+  if (Array.isArray(block.keywords) && block.keywords.length) {
+    keywords.forEach((keyword) => {
+      if (block.keywords.some((item) => normalizeLooseText(item).includes(normalizeLooseText(keyword)))) score += 2;
+    });
+  }
+  return score;
+}
+
+function selectCandidateEvidenceForTask(task, sourceBlocks = [], globalFacts = {}, limit = 6) {
+  const scored = (Array.isArray(sourceBlocks) ? sourceBlocks : [])
+    .map((block) => ({ block, score: scoreEvidenceBlockForTask(block, task, globalFacts) }))
+    .filter((item) => item.score > 0)
+    .sort((first, second) => second.score - first.score || Number(first.block.order || 0) - Number(second.block.order || 0));
+
+  const selected = new Map();
+  scored.slice(0, limit).forEach((item) => selected.set(item.block.id, item.block));
+
+  const taskText = `${task?.label || ''} ${task?.prompt || ''} ${task?.key || ''}`;
+  const factHints = [];
+  if (/项目名称|采购项目名称/.test(taskText) && globalFacts.projectName) factHints.push(globalFacts.projectName);
+  if (/最高限价|控制价|金额|税/.test(taskText)) factHints.push(globalFacts.maxPrice, globalFacts.taxMode);
+  if (/低于成本|阈值/.test(taskText)) factHints.push(globalFacts.lowCostThresholds);
+  if (/评审方法|评审办法/.test(taskText)) factHints.push(globalFacts.reviewMethod);
+  if (/建设地点|地点/.test(taskText)) factHints.push(globalFacts.location);
+  if (/建设内容|规模|采购范围|实施内容|技术|服务要求/.test(taskText)) factHints.push(globalFacts.constructionContent, globalFacts.procurementScope, globalFacts.technicalRequirements);
+  if (/工期|服务期/.test(taskText)) factHints.push(globalFacts.duration);
+  if (/资质|资格/.test(taskText)) factHints.push(globalFacts.qualification);
+  if (/业绩/.test(taskText)) factHints.push(globalFacts.performance);
+  if (/人员/.test(taskText)) factHints.push(globalFacts.personnel);
+  if (/付款|支付|结算/.test(taskText)) factHints.push(globalFacts.paymentTerms);
+  if (/标段|采购对象|采购标的/.test(taskText)) factHints.push(globalFacts.procurementObject, globalFacts.lotCount);
+
+  factHints.filter(Boolean).forEach((fact) => {
+    (fact.sourceBlockIds || []).forEach((id) => {
+      const block = sourceBlocks.find((item) => item.id === id);
+      if (block) selected.set(block.id, block);
+    });
+  });
+
+  return [...selected.values()]
+    .sort((first, second) => Number(first.order || 0) - Number(second.order || 0))
+    .slice(0, limit)
+    .map((block) => compactEvidenceBlock(block));
+}
+
+function createTaskEvidenceMap(tasks = [], sourceBlocks = [], globalFacts = {}) {
+  const map = {};
+  (Array.isArray(tasks) ? tasks : []).forEach((task) => {
+    map[task.key] = selectCandidateEvidenceForTask(task, sourceBlocks, globalFacts);
+  });
+  return map;
+}
+
+function createPageTaskFillMessages({ template, demandDocument, tasks, batchIndex, totalBatches, globalFacts = {}, taskEvidenceMap = {} }) {
   const schemaExample = {
     results: [
       {
@@ -1853,6 +2211,7 @@ function createPageTaskFillMessages({ template, demandDocument, sourceBlocks, ta
         evidence: '逐字摘录采购需求中的依据，找不到依据则为空',
         sourceBlockIds: ['src_001'],
         reason: '简短说明为什么这样填写，缺失时说明缺失原因',
+        missingKind: '',
       },
     ],
   };
@@ -1876,23 +2235,33 @@ function createPageTaskFillMessages({ template, demandDocument, sourceBlocks, ta
       sourceText: anchor.sourceText,
       pageHint: anchor.pageHint,
     })) : [],
+    candidateEvidenceBlocks: Array.isArray(taskEvidenceMap[task.key]) ? taskEvidenceMap[task.key] : [],
   }));
 
   return [
     {
       role: 'system',
       content: [
-        '你是采购文件任务包填充员。你的任务是根据“采购需求方案证据块”为模板任务生成填充值。',
+        `你是采购文件任务包填充员，提示词版本：${PAGE_TASK_FILL_PROMPT_VERSION}。`,
+        '你的任务是根据采购需求方案证据，为页面任务生成填充值；不是改写模板，也不是整篇生成。',
         '只返回严格 JSON 对象，不要 Markdown，不要解释，不要代码块。',
         '必须逐项返回输入任务中的 key，不得遗漏，不得新增 key。',
-        '只能根据采购需求证据块填写，不要根据模板原文或常识编造。',
-        '如果采购需求中没有明确依据，value 为空字符串，status 为 missing，confidence 为 0，并说明 reason。',
-        '如果字段为选择题或复合题，value 必须优先使用任务 options 中的选项文字；复合题可以写成“选项：补充内容”。',
-        '如果字段涉及金额、资格、评分、付款、保证金、工期、人员、业绩等高风险内容，即使找到答案也优先 status=review。',
+        '优先使用“需求全局事实包”，再使用每个任务的 candidateEvidenceBlocks；不要使用模板原文当作需求依据。',
+        '允许基于证据做稳定推导：采购控制价 -> 最高限价，招采方式 -> 评审方法，工程概况位置 -> 建设地点，工期 -> 计划工期，采购控制价均为不含税 -> 最高限价不含税。',
+        '项目名称策略固定为“总项目名称”：优先使用需求全局事实包中的 projectName，不要自动拼接采购对象。',
+        'blank：直接输出应填文本；number：只输出数字或数字+必要单位；calculated：输出依据规则得到的数字或比例。',
+        'choice：value 必须严格等于 options 中一个选项文字，找不到依据时 missing。',
+        'multiChoice：value 必须由 options 中多个选项用“、”连接，找不到依据时 missing。',
+        'compound：value 使用“选项：补充内容”；多个选项用“、”连接；无补充内容则只写选项；选项必须来自 options。',
+        '如果采购需求中没有依据，value 为空字符串，status 为 missing，confidence 为 0，并说明 reason。',
+        '项目编号、联系人、电话、邮箱、公告日期、封面日期、供应商主体信息没有明确依据时禁止推导。',
+        '评分细则、评分分值、评分权重、报价扣分方式等如果需求没有独立评分方案，必须 missing，missingKind=needs-human-policy，reason 写“采购需求未提供评分细则”。',
+        '金额、资质、业绩、人员、付款、保证金、工期、低于成本阈值、评审方法等高风险字段即使找到答案也优先 status=review。',
         'status 只能是 filled、review、missing、error。',
         'confidence 是 0-100 的整数。',
         'evidence 必须摘录采购需求原文中的关键依据，不得写模板原文。',
-        'sourceBlockIds 必须来自输入证据块编号，例如 src_001；没有依据时为空数组。',
+        'sourceBlockIds 必须来自 candidateEvidenceBlocks 或需求全局事实包中的 src_xxx 编号；没有依据时为空数组。',
+        'missingKind 只能是 not-in-demand、needs-human-policy、not-found 或空字符串。',
       ].join('\n'),
     },
     {
@@ -1903,11 +2272,11 @@ function createPageTaskFillMessages({ template, demandDocument, sourceBlocks, ta
         `需求文件：${demandDocument?.fileName || ''}`,
         `当前批次：${batchIndex}/${totalBatches}`,
         '',
+        '需求全局事实包 JSON：',
+        JSON.stringify(summarizeGlobalFacts(globalFacts), null, 2),
+        '',
         '待填任务 JSON：',
         JSON.stringify(taskPayload, null, 2),
-        '',
-        '采购需求方案证据块：',
-        createDemandEvidencePackForPageTasks(sourceBlocks),
         '',
         '输出 JSON Schema 示例：',
         JSON.stringify(schemaExample, null, 2),
@@ -1930,6 +2299,8 @@ function normalizePageTaskFillResult(raw, task, sourceBlocks) {
   const statusRaw = normalizeString(raw?.status);
   const value = cleanExtractedValue(raw?.value);
   const sourceBlockIds = normalizeSourceBlockIds(raw?.sourceBlockIds || raw?.source_block_ids || raw?.sourceBlockId || raw?.source_block_id, sourceBlocks);
+  const filledByRaw = normalizeString(raw?.filledBy || raw?.filled_by);
+  const missingKindRaw = normalizeString(raw?.missingKind || raw?.missing_kind);
   let status = PAGE_TASK_FILL_RESULT_STATUSES.has(statusRaw) ? statusRaw : '';
   if (!status) {
     status = value ? (task.risk ? 'review' : 'filled') : 'missing';
@@ -1957,6 +2328,8 @@ function normalizePageTaskFillResult(raw, task, sourceBlocks) {
     sourceBlockIds,
     confidence: value ? clampConfidence(raw?.confidence || (sourceBlockIds.length ? 78 : 55)) : 0,
     reason: normalizeString(raw?.reason || raw?.note || raw?.message),
+    filledBy: PAGE_TASK_FILL_RESULT_SOURCES.has(filledByRaw) ? filledByRaw : (value ? 'ai' : undefined),
+    missingKind: PAGE_TASK_FILL_MISSING_KINDS.has(missingKindRaw) ? missingKindRaw : undefined,
     updatedAt: nowIso(),
   };
 }
@@ -1969,6 +2342,256 @@ function normalizePageTaskFillPayload(payload, tasks, sourceBlocks) {
     if (key) byKey.set(key, item);
   });
   return tasks.map((task) => normalizePageTaskFillResult(byKey.get(task.key) || {}, task, sourceBlocks));
+}
+
+function taskFillText(task) {
+  return [
+    task?.key,
+    task?.label,
+    task?.group,
+    task?.chapter,
+    task?.prompt,
+    task?.placeholder,
+    ...(Array.isArray(task?.options) ? task.options : []),
+  ].map(normalizeString).filter(Boolean).join(' ');
+}
+
+function taskCoreText(task) {
+  return [
+    task?.key,
+    task?.label,
+    task?.prompt,
+    task?.placeholder,
+    ...(Array.isArray(task?.options) ? task.options : []),
+    ...(Array.isArray(task?.anchors) ? task.anchors.flatMap((anchor) => [anchor?.matchText, anchor?.sourceText]) : []),
+  ].map(normalizeString).filter(Boolean).join(' ');
+}
+
+function isTaskHighRisk(task) {
+  return Boolean(task?.risk) || PAGE_TASK_FILL_RISK_PATTERN.test(taskFillText(task));
+}
+
+function isBlockedAutoFillTask(task) {
+  return PAGE_TASK_FILL_BLOCKED_PATTERN.test(taskFillText(task));
+}
+
+function isScoringDetailTask(task) {
+  const text = taskFillText(task);
+  if (/评审方法|评审办法章节选择|低于成本/.test(text)) return false;
+  return PAGE_TASK_FILL_SCORING_PATTERN.test(text);
+}
+
+function inferTaskFactCategory(task) {
+  const text = taskCoreText(task);
+  if (isBlockedAutoFillTask(task) || isScoringDetailTask(task)) return '';
+  if (/项目名称|采购项目名称|公告标题/.test(text)) return 'projectName';
+  if (/采购方式|招采方式/.test(text)) return 'procurementMethod';
+  if (/采购对象|采购标的/.test(text)) return 'procurementObject';
+  if (/标段划分|标段数量|标段号|标段/.test(text)) return 'lotCount';
+  if (/低于成本|阈值|平均价比例/.test(text) && !/分钟|说明材料|提交时间/.test(text)) return 'lowCostThresholds';
+  if (/评审方法|评审办法章节选择/.test(text)) return 'reviewMethod';
+  if (/财务/.test(text)) return 'financialRequirement';
+  if (/资质/.test(text)) return 'qualificationCompound';
+  if (/业绩/.test(text)) return 'performanceCompound';
+  if (/人员|技术负责人|安全生产管理人员/.test(text)) return 'personnelCompound';
+  if (/一般资格|供应商资格要求|资格要求/.test(text)) return 'qualification';
+  if (/采购范围|实施内容|界面划分/.test(text)) return 'procurementScope';
+  if (/建设地点|履约地点|实施地点/.test(text)) return 'location';
+  if (/建设内容|建设规模|项目概况/.test(text)) return 'constructionContent';
+  if (/技术、服务要求|技术服务要求|技术要求|服务要求/.test(text)) return 'technicalRequirements';
+  if (/工期|服务期|合同履行期限/.test(text)) return 'duration';
+  if (/付款|支付|结算|质保金/.test(text)) return 'paymentTerms';
+  if (/最高限价|控制价|限价明细|金额|报价.*税|含税|不含税/.test(text) && !/施工图|清单状态|另册/.test(text)) return 'maxPrice';
+  return '';
+}
+
+function createFactForTask(task, globalFacts = {}) {
+  const category = inferTaskFactCategory(task);
+  const text = taskFillText(task);
+  if (!category) return null;
+  if (category === 'procurementMethod') {
+    const reviewFact = globalFacts.reviewMethod;
+    if (!reviewFact) return null;
+    return {
+      value: '询比采购',
+      evidence: reviewFact.evidence,
+      sourceBlockIds: reviewFact.sourceBlockIds || [],
+      confidence: reviewFact.confidence || 88,
+    };
+  }
+  if (category === 'maxPrice') {
+    if (/compound|含税|不含税|限价明细|税/.test(`${task?.type || ''} ${text}`)) {
+      return globalFacts.maxPriceCompound || globalFacts.maxPriceWithTax || globalFacts.maxPrice || null;
+    }
+    return globalFacts.maxPrice || null;
+  }
+  if (category === 'lowCostThresholds') {
+    const fact = globalFacts.lowCostThresholds;
+    if (!fact) return null;
+    if (/平均价|算术平均/.test(text)) {
+      return {
+        value: fact.averagePriceRatio || '',
+        evidence: fact.evidence,
+        sourceBlockIds: fact.sourceBlockIds || [],
+        confidence: fact.confidence || 90,
+      };
+    }
+    if (/最高限价|阈值一|阈值二|比例/.test(text)) {
+      return {
+        value: fact.highestPriceRatio || '',
+        evidence: fact.evidence,
+        sourceBlockIds: fact.sourceBlockIds || [],
+        confidence: fact.confidence || 90,
+      };
+    }
+    return fact;
+  }
+  if (category === 'qualificationCompound') return globalFacts.qualificationCompound || globalFacts.qualification || null;
+  if (category === 'performanceCompound') return globalFacts.performanceCompound || globalFacts.performance || null;
+  if (category === 'personnelCompound') return globalFacts.personnelCompound || globalFacts.personnel || null;
+  if (category === 'financialRequirement') return null;
+  return globalFacts[category] || null;
+}
+
+function resultFromGlobalFact(task, fact, filledBy = 'global-fact', reason = '') {
+  const value = cleanExtractedValue(fact?.value);
+  if (!value) return null;
+  const highRisk = isTaskHighRisk(task);
+  return {
+    key: task.key,
+    label: task.label,
+    page: Number(task.page || 0),
+    pageTitle: normalizeString(task.pageTitle) || `第 ${task.page || 0} 页`,
+    group: normalizeString(task.group) || '未分组',
+    chapter: normalizeString(task.chapter) || '',
+    type: normalizeString(task.type) || 'blank',
+    required: Boolean(task.required),
+    risk: Boolean(task.risk),
+    status: highRisk ? 'review' : 'filled',
+    value,
+    evidence: normalizeString(fact.evidence),
+    sourceBlockIds: Array.isArray(fact.sourceBlockIds) ? fact.sourceBlockIds : [],
+    confidence: clampConfidence(fact.confidence || (highRisk ? 84 : 88)),
+    reason: reason || '根据需求全局事实包补填，需结合模板位置核对。',
+    filledBy,
+    missingKind: undefined,
+    updatedAt: nowIso(),
+  };
+}
+
+function createMissingPolicyResult(result, task, missingKind, reason) {
+  return {
+    ...result,
+    key: task.key,
+    label: task.label,
+    page: Number(task.page || result.page || 0),
+    pageTitle: normalizeString(task.pageTitle || result.pageTitle) || `第 ${task.page || 0} 页`,
+    group: normalizeString(task.group || result.group) || '未分组',
+    chapter: normalizeString(task.chapter || result.chapter) || '',
+    type: normalizeString(task.type || result.type) || 'blank',
+    required: Boolean(task.required),
+    risk: Boolean(task.risk),
+    status: 'missing',
+    value: '',
+    evidence: '',
+    sourceBlockIds: [],
+    confidence: 0,
+    reason,
+    filledBy: undefined,
+    missingKind,
+    updatedAt: nowIso(),
+  };
+}
+
+function postprocessPageTaskFillResults(results, tasks, globalFacts = {}, sourceBlocks = []) {
+  const sourceIds = new Set((Array.isArray(sourceBlocks) ? sourceBlocks : []).map((block) => block.id));
+  const taskByKey = new Map((Array.isArray(tasks) ? tasks : []).map((task) => [normalizeFieldKey(task.key), task]));
+  const normalized = (Array.isArray(results) ? results : []).map((result) => {
+    const task = taskByKey.get(normalizeFieldKey(result?.key)) || {};
+    if (!task?.key) return result;
+    if (isScoringDetailTask(task) && !globalFacts.scoringDetails?.value) {
+      return createMissingPolicyResult(result, task, 'needs-human-policy', '采购需求未提供评分细则');
+    }
+
+    const fact = createFactForTask(task, globalFacts);
+    const hasValue = Boolean(normalizeString(result?.value));
+    const hasEvidence = Boolean(normalizeString(result?.evidence)) && Array.isArray(result.sourceBlockIds) && result.sourceBlockIds.some((id) => sourceIds.has(id));
+
+    if (!hasValue && fact?.value) {
+      return resultFromGlobalFact(task, fact, 'global-fact');
+    }
+
+    if (hasValue && isTaskHighRisk(task) && !hasEvidence) {
+      if (fact?.value) {
+        return resultFromGlobalFact(task, fact, 'global-fact', '模型给出了答案但证据不足，已改用需求全局事实包。');
+      }
+      return createMissingPolicyResult(result, task, 'not-found', '高风险字段缺少可追溯证据，已退回缺失待人工确认。');
+    }
+
+    if (!hasValue && result?.status !== 'error') {
+      if (isBlockedAutoFillTask(task)) {
+        return {
+          ...result,
+          reason: result.reason || '采购需求未提供该字段，禁止自动推导。',
+          missingKind: result.missingKind || 'not-in-demand',
+          updatedAt: nowIso(),
+        };
+      }
+      return {
+        ...result,
+        reason: result.reason || '候选证据中未找到可填依据。',
+        missingKind: result.missingKind || 'not-found',
+        updatedAt: nowIso(),
+      };
+    }
+
+    return {
+      ...result,
+      status: hasValue && isTaskHighRisk(task) && result.status === 'filled' ? 'review' : result.status,
+      filledBy: hasValue ? (result.filledBy || 'ai') : result.filledBy,
+      updatedAt: nowIso(),
+    };
+  });
+
+  const byCategory = new Map();
+  normalized.forEach((result) => {
+    if (!normalizeString(result?.value)) return;
+    const task = taskByKey.get(normalizeFieldKey(result.key));
+    const category = inferTaskFactCategory(task);
+    if (!category || category === 'financialRequirement') return;
+    if (!byCategory.has(category)) {
+      byCategory.set(category, result);
+    }
+  });
+
+  return normalized.map((result) => {
+    if (normalizeString(result?.value) || result?.status === 'error') return result;
+    const task = taskByKey.get(normalizeFieldKey(result?.key));
+    const category = inferTaskFactCategory(task);
+    const source = category ? byCategory.get(category) : null;
+    if (!task || !source?.value || isScoringDetailTask(task) || isBlockedAutoFillTask(task)) return result;
+    const highRisk = isTaskHighRisk(task);
+    return {
+      ...result,
+      status: highRisk ? 'review' : 'filled',
+      value: source.value,
+      evidence: source.evidence,
+      sourceBlockIds: source.sourceBlockIds,
+      confidence: Math.min(86, clampConfidence(source.confidence || 80)),
+      reason: `与已填字段“${source.label || category}”语义一致，复用其已溯源结果。`,
+      filledBy: 'postprocess',
+      missingKind: undefined,
+      updatedAt: nowIso(),
+    };
+  });
+}
+
+async function writeFillRunJson(runDir, fileName, value) {
+  await writeJsonFile(path.join(runDir, fileName), value);
+}
+
+async function writeFillRunBatchJson(runDir, batchIndex, suffix, value) {
+  await writeJsonFile(path.join(runDir, 'batches', `batch-${String(batchIndex).padStart(3, '0')}-${suffix}.json`), value);
 }
 
 async function savePageTaskFillPack(app, templateId, fillPack) {
@@ -3912,6 +4535,22 @@ function createProcurementAgentService({ app, configStore, aiService }) {
 
     const demandDocument = state.documents.find((item) => item.role === 'demand') || null;
     const sourceBlocks = state.sourceBlocks.length ? state.sourceBlocks : createSourceBlocks(markdown);
+    const globalFacts = extractDemandGlobalFacts(sourceBlocks, markdown);
+    const globalFactsSummary = summarizeGlobalFacts(globalFacts);
+    const runId = `fill-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomUUID().slice(0, 8)}`;
+    const runDir = getTemplateFillRunDir(app, template.id, runId);
+    await fs.mkdir(path.join(runDir, 'batches'), { recursive: true });
+    await writeFillRunJson(runDir, 'global-facts.json', {
+      runId,
+      promptVersion: PAGE_TASK_FILL_PROMPT_VERSION,
+      generatedAt: nowIso(),
+      templateId: template.id,
+      templateName: template.name || template.fileName || '',
+      demandDocumentId: demandDocument?.id || '',
+      demandFileName: demandDocument?.fileName || '',
+      facts: globalFacts,
+      summary: globalFactsSummary,
+    });
     const batchSize = Math.max(1, Math.min(Number(payload?.batchSize) || 6, 12));
     const batches = [];
     for (let index = 0; index < tasks.length; index += batchSize) {
@@ -3924,14 +4563,16 @@ function createProcurementAgentService({ app, configStore, aiService }) {
       extraction: {
         ...state.extraction,
         status: 'extracting',
-        message: `正在调用当前文本模型填充页面任务包，共 ${tasks.length} 项`,
+        message: `正在调用当前文本模型填充页面任务包，共 ${tasks.length} 项（${PAGE_TASK_FILL_PROMPT_VERSION}）`,
       },
-    }, `开始填充页面任务包：${tasks.length} 项`));
+    }, `开始填充页面任务包：${tasks.length} 项，${PAGE_TASK_FILL_PROMPT_VERSION}`));
 
     emitPageTaskFillProgress({
       status: 'running',
       templateId: template.id,
       templateName: template.name,
+      runId,
+      promptVersion: PAGE_TASK_FILL_PROMPT_VERSION,
       totalBatches: batches.length,
       completedBatches: 0,
       totalTasks: tasks.length,
@@ -3949,6 +4590,8 @@ function createProcurementAgentService({ app, configStore, aiService }) {
         status: 'batch-running',
         templateId: template.id,
         templateName: template.name,
+        runId,
+        promptVersion: PAGE_TASK_FILL_PROMPT_VERSION,
         batchIndex: batchIndex + 1,
         totalBatches: batches.length,
         completedBatches,
@@ -3960,17 +4603,29 @@ function createProcurementAgentService({ app, configStore, aiService }) {
       });
 
       try {
+        const taskEvidenceMap = createTaskEvidenceMap(batch, sourceBlocks, globalFacts);
+        const messages = createPageTaskFillMessages({
+          template,
+          demandDocument,
+          tasks: batch,
+          batchIndex: batchIndex + 1,
+          totalBatches: batches.length,
+          globalFacts,
+          taskEvidenceMap,
+        });
+        await writeFillRunBatchJson(runDir, batchIndex + 1, 'input', {
+          runId,
+          promptVersion: PAGE_TASK_FILL_PROMPT_VERSION,
+          batchIndex: batchIndex + 1,
+          totalBatches: batches.length,
+          tasks: batch,
+          taskEvidenceMap,
+          messages,
+        });
         const aiPayload = await aiService.requestJson({
-          messages: createPageTaskFillMessages({
-            template,
-            demandDocument,
-            sourceBlocks,
-            tasks: batch,
-            batchIndex: batchIndex + 1,
-            totalBatches: batches.length,
-          }),
+          messages,
           temperature: 0.1,
-          max_tokens: 2200,
+          max_tokens: 2600,
           timeout_ms: 300000,
           schemaName: 'procurement_page_task_fill',
           progressLabel: `采购页面任务填充 第 ${batchIndex + 1} 批`,
@@ -3978,12 +4633,16 @@ function createProcurementAgentService({ app, configStore, aiService }) {
           logTitle: '采购页面任务填充',
         });
         const normalizedBatch = normalizePageTaskFillPayload(aiPayload, batch, sourceBlocks);
+        await writeFillRunBatchJson(runDir, batchIndex + 1, 'raw', aiPayload);
+        await writeFillRunBatchJson(runDir, batchIndex + 1, 'normalized', normalizedBatch);
         results.push(...normalizedBatch);
         completedBatches += 1;
         emitPageTaskFillProgress({
           status: 'batch-done',
           templateId: template.id,
           templateName: template.name,
+          runId,
+          promptVersion: PAGE_TASK_FILL_PROMPT_VERSION,
           batchIndex: batchIndex + 1,
           totalBatches: batches.length,
           completedBatches,
@@ -4000,11 +4659,19 @@ function createProcurementAgentService({ app, configStore, aiService }) {
           status: 'error',
           reason: message,
         }, task, sourceBlocks));
+        await writeFillRunBatchJson(runDir, batchIndex + 1, 'error', {
+          message,
+          stack: error?.stack || '',
+          batch,
+          failedResults,
+        });
         results.push(...failedResults);
         emitPageTaskFillProgress({
           status: 'batch-error',
           templateId: template.id,
           templateName: template.name,
+          runId,
+          promptVersion: PAGE_TASK_FILL_PROMPT_VERSION,
           batchIndex: batchIndex + 1,
           totalBatches: batches.length,
           completedBatches,
@@ -4017,6 +4684,7 @@ function createProcurementAgentService({ app, configStore, aiService }) {
       }
     }
 
+    const finalResults = postprocessPageTaskFillResults(results, tasks, globalFacts, sourceBlocks);
     const baseFillPack = {
       templateId: template.id,
       templateName: template.name || template.fileName || '',
@@ -4024,13 +4692,40 @@ function createProcurementAgentService({ app, configStore, aiService }) {
       demandFileName: demandDocument?.fileName || '',
       generatedAt: nowIso(),
       status: failedBatches ? 'partial' : 'done',
-      results,
+      promptVersion: PAGE_TASK_FILL_PROMPT_VERSION,
+      runId,
+      debugPath: runDir,
+      globalFactsSummary,
+      results: finalResults,
     };
     const fillPack = {
       ...baseFillPack,
       ...createPageTaskFillPackSummary(baseFillPack),
     };
     await savePageTaskFillPack(app, template.id, fillPack);
+    await writeFillRunJson(runDir, 'summary.json', {
+      runId,
+      promptVersion: PAGE_TASK_FILL_PROMPT_VERSION,
+      generatedAt: fillPack.generatedAt,
+      status: fillPack.status,
+      templateId: template.id,
+      templateName: template.name || template.fileName || '',
+      demandDocumentId: demandDocument?.id || '',
+      demandFileName: demandDocument?.fileName || '',
+      batchCount: batches.length,
+      failedBatches,
+      ...createPageTaskFillPackSummary(fillPack),
+      missingResults: finalResults
+        .filter((result) => result.status === 'missing' || result.status === 'error')
+        .map((result) => ({
+          key: result.key,
+          label: result.label,
+          page: result.page,
+          status: result.status,
+          missingKind: result.missingKind || '',
+          reason: result.reason || '',
+        })),
+    });
 
     const nextState = addLog({
       ...startedState,
@@ -4054,11 +4749,13 @@ function createProcurementAgentService({ app, configStore, aiService }) {
       status: failedBatches ? 'partial' : 'success',
       templateId: template.id,
       templateName: template.name,
+      runId,
+      promptVersion: PAGE_TASK_FILL_PROMPT_VERSION,
       totalBatches: batches.length,
       completedBatches,
       failedBatches,
       totalTasks: tasks.length,
-      completedTasks: results.length,
+      completedTasks: finalResults.length,
       fillPack,
       message: failedBatches ? '页面任务包部分填充完成' : '页面任务包填充完成',
     });

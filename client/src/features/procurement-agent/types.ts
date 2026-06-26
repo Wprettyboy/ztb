@@ -204,6 +204,8 @@ export interface ProcurementPageTaskFillResult {
   sourceBlockIds: string[];
   confidence: number;
   reason: string;
+  filledBy?: 'ai' | 'global-fact' | 'postprocess';
+  missingKind?: 'not-in-demand' | 'needs-human-policy' | 'not-found';
   updatedAt: string;
 }
 
@@ -219,6 +221,10 @@ export interface ProcurementPageTaskFillPack {
   errorCount: number;
   generatedAt: string;
   status: string;
+  promptVersion?: string;
+  runId?: string;
+  debugPath?: string;
+  globalFactsSummary?: Record<string, { value: string; sourceBlockIds: string[] }>;
   results: ProcurementPageTaskFillResult[];
 }
 
